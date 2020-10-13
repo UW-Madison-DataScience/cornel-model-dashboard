@@ -1,0 +1,186 @@
+---
+title: "Preliminary Data Analysis"
+author: "Sean Kent"
+date: "10/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(odbc)
+library(DBI)
+library(tidyverse)
+library(dbplyr)
+
+```
+
+
+```{r}
+# odbc::odbcListDrivers()
+# see https://db.rstudio.com/best-practices/drivers/ to install drivers
+
+con <- dbConnect(odbc(), 
+                 driver = "PostgreSQL Driver",
+                 server = "database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com",
+                 database = "postgres",
+                 uid = "postgres",
+                 pwd = askpass::askpass(),
+                 port = 5432)
+
+```
+
+## Basic exploration of the sim_params table
+
+```{r}
+# odbc::dbExistsTable(con, "sim_params")
+odbc::odbcListColumns(con, "sim_params")
+```
+
+
+```{r}
+sim_params_db <- tbl(con, "sim_params")
+
+colnames(sim_params_db)
+
+sim_params_db %>% 
+  distinct(contact_rates)
+
+sim_params_db %>% 
+  distinct(time_horizon)
+
+sim_params_db %>% 
+  distinct(group_index)
+
+sim_params_db %>% 
+  filter(sim_id == "eb7b24a6-8623-4fd1-af35-e94748ec65f8") %>% 
+  distinct()
+
+sim_params_db
+
+```
+
+- Not sure what this dataset is unique at.  The sim_id has about 160 rows for each, and there are 8 unique `contact_rates`, 8 unique `group_index`, which corresponds exactly with group_names. Actually, it appears that each sim_id corresponds only to 8 unique rows, so perhaps 160 corresponds to the 20 trajectories * 8 parameters info combos.  
+- It seems like this is set up for potentially varying group contact rates parameters, but at the present moment there is only one set of contact rates used.  
+
+
+## Basic exploration of the group_params table
+
+```{r}
+group_params_db <- tbl(con, "group_params")
+
+colnames(group_params_db)
+
+group_params_db %>% 
+  filter(sim_id == "eb7b24a6-8623-4fd1-af35-e94748ec65f8") %>% 
+  distinct()
+
+group_params_db %>% 
+  distinct(sim_id)
+
+
+```
+
+- Again here there appears to be some repeated rows going on.  Each sim_id only has 8 unique rows, but 160 rows total.  These 8 rows correspond to the parameters on the group (grad students, undergrad dorm, etc).  
+- There are 31 distinct sim_ids, need to figure out which parameters are varied throughout. 
+
+```{r}
+# Which parameters are varied in the 31 different simulations?
+
+all_params <- 
+  group_params_db %>% 
+  distinct() %>% 
+  collect()
+
+# Skim the dataset and filter for unique values
+
+all_params_wide <-   
+  all_params %>% 
+  select(-scenario_name) %>% 
+  pivot_wider(id_cols = sim_id,  
+              names_from = group_number,
+              values_from = c(everything(), -sim_id, -group_number)) %>% 
+  mutate(across(everything(), ~ as.factor(.x)))
+
+skim_df <- 
+  all_params_wide %>% 
+  skimr::skim() %>% 
+  filter(factor.n_unique > 1)
+
+skim_df
+```
+
+- Parameters varied:
+  - initial_ID_prevalence
+  - daily_outside_infection_p
+  - test_protocol_QFNR
+  
+It seems like the parameters are only varied for groups 0, 1, 2, and 3.  That is, the Undergrads (Dorm = 0, off campus = 1), Grad student research (2), and grad student other(3). 
+
+
+```{r}
+all_params_wide %>% 
+  select(skim_df$skim_variable) 
+
+all_params_wide %>% 
+  select(skim_df$skim_variable) %>% 
+  select(starts_with("initial_ID_prevalence")) %>% 
+  distinct()
+
+
+all_params_wide %>% 
+  select(skim_df$skim_variable, -sim_id) %>% 
+  distinct()
+
+all_params_wide %>% 
+  select(skim_df$skim_variable, -sim_id) %>% 
+  arrange_all()
+```
+
+More detail on how the parameters are varied:
+
+- For `initial_ID_prevalence`, there are 11 unique combinations
+  - Group 0 (UGD): there are 4 unique values: 0.00294, 0.00090, 0.00274, 0.00027.
+    - The most common value is 0.00294
+  - Group 1 (UGOC): there are 4 unique values: 0.00090, 0.00973, 0.00274, 0.00027.
+    - The most common value is 0.00973, the other values happen once
+  - Group 2 (GSR): there are 2 unique values: 0.03297, 0.00027, 0.00090, 0.00027.
+    - The most common value is 0.03297, the other value happens once
+  - Group 3 (GSO): there are 2 unique values: 0.03297, 0.00027
+    - The most common value is 0.03297, the other value happens once
+- For `daily_outside_infection_p`, there are 7 unique combinations
+  - For groups 0, 1, 2, there are 3 unique values: 1.2e-5, 1.5e-4, 3.0e-4
+    - The most common value is 1.2e-5.
+    - The other values happen once in each combination, and there is one setting where all are set to 1.2e-5
+- For `test_protocol_QFNR`, there are 4 unique combinations
+  - For group 0, 1, 2, there are 2 unique values: 0.1, 0.3
+  - The common value is 0.1
+  - Values are changed to 0.3 for one group in each setting.  
+  
+Ignoring sim_id, it seems like there are actually only 20 unique parameter combinations.  There is a group of 12 sim_ids that only represent 1 combination of the parameter settings, and they are the most common.  
+
+
+## Basic exploration of the results table
+
+```{r}
+results_db <- tbl(con, "results")
+
+colnames(results_db)
+
+results_db %>% 
+  filter(sim_id == "eb7b24a6-8623-4fd1-af35-e94748ec65f8",
+         replicate_id == "53d853b7-a01e-491c-82c3-2afaf1e7192f",
+         group_number == 0,
+         t == 112) 
+
+results_db %>% 
+  distinct(replicate_id)
+
+```
+
+- There are exactly 31 replicate ids, and it seems like there is one for each sim_id.  What is the difference between the two?  
+- Consequently, there is not a unique id for each trajectory of the simulation (that I can see), how to group on this to calculate peak and time to peak??
+- Seems like there are 20 trajectories for each of the sim_id, replicate_id combinations.  
+
+TODO: wait for Steve to respond about the replicate grouping variable before proceeding further. 
+
