@@ -56,6 +56,9 @@ sim_params_db %>%
   filter(sim_id == "eb7b24a6-8623-4fd1-af35-e94748ec65f8") %>% 
   distinct()
 
+sim_params_db %>% 
+  distinct(sim_id)
+
 sim_params_db
 
 ```
@@ -115,7 +118,7 @@ skim_df
   - daily_outside_infection_p
   - test_protocol_QFNR
   
-It seems like the parameters are only varied for groups 0, 1, 2, and 3.  That is, the Undergrads (Dorm = 0, off campus = 1), Grad student research (2), and grad student other(3). 
+It seems like the parameters are varied for all groups 0-7.  
 
 
 ```{r}
@@ -137,27 +140,27 @@ all_params_wide %>%
   arrange_all()
 ```
 
-More detail on how the parameters are varied:
+<!-- More detail on how the parameters are varied: -->
 
-- For `initial_ID_prevalence`, there are 11 unique combinations
-  - Group 0 (UGD): there are 4 unique values: 0.00294, 0.00090, 0.00274, 0.00027.
-    - The most common value is 0.00294
-  - Group 1 (UGOC): there are 4 unique values: 0.00090, 0.00973, 0.00274, 0.00027.
-    - The most common value is 0.00973, the other values happen once
-  - Group 2 (GSR): there are 2 unique values: 0.03297, 0.00027, 0.00090, 0.00027.
-    - The most common value is 0.03297, the other value happens once
-  - Group 3 (GSO): there are 2 unique values: 0.03297, 0.00027
-    - The most common value is 0.03297, the other value happens once
-- For `daily_outside_infection_p`, there are 7 unique combinations
-  - For groups 0, 1, 2, there are 3 unique values: 1.2e-5, 1.5e-4, 3.0e-4
-    - The most common value is 1.2e-5.
-    - The other values happen once in each combination, and there is one setting where all are set to 1.2e-5
-- For `test_protocol_QFNR`, there are 4 unique combinations
-  - For group 0, 1, 2, there are 2 unique values: 0.1, 0.3
-  - The common value is 0.1
-  - Values are changed to 0.3 for one group in each setting.  
-  
-Ignoring sim_id, it seems like there are actually only 20 unique parameter combinations.  There is a group of 12 sim_ids that only represent 1 combination of the parameter settings, and they are the most common.  
+<!-- - For `initial_ID_prevalence`, there are 11 unique combinations -->
+<!--   - Group 0 (UGD): there are 4 unique values: 0.00294, 0.00090, 0.00274, 0.00027. -->
+<!--     - The most common value is 0.00294 -->
+<!--   - Group 1 (UGOC): there are 4 unique values: 0.00090, 0.00973, 0.00274, 0.00027. -->
+<!--     - The most common value is 0.00973, the other values happen once -->
+<!--   - Group 2 (GSR): there are 2 unique values: 0.03297, 0.00027, 0.00090, 0.00027. -->
+<!--     - The most common value is 0.03297, the other value happens once -->
+<!--   - Group 3 (GSO): there are 2 unique values: 0.03297, 0.00027 -->
+<!--     - The most common value is 0.03297, the other value happens once -->
+<!-- - For `daily_outside_infection_p`, there are 7 unique combinations -->
+<!--   - For groups 0, 1, 2, there are 3 unique values: 1.2e-5, 1.5e-4, 3.0e-4 -->
+<!--     - The most common value is 1.2e-5. -->
+<!--     - The other values happen once in each combination, and there is one setting where all are set to 1.2e-5 -->
+<!-- - For `test_protocol_QFNR`, there are 4 unique combinations -->
+<!--   - For group 0, 1, 2, there are 2 unique values: 0.1, 0.3 -->
+<!--   - The common value is 0.1 -->
+<!--   - Values are changed to 0.3 for one group in each setting.   -->
+
+<!-- Ignoring sim_id, it seems like there are actually only 20 unique parameter combinations.  There is a group of 12 sim_ids that only represent 1 combination of the parameter settings, and they are the most common.   -->
 
 
 ## Basic exploration of the results table
@@ -174,7 +177,22 @@ results_db %>%
          t == 112) 
 
 results_db %>% 
-  distinct(replicate_id)
+  distinct(replicate_id) 
+
+results_db %>% 
+  distinct(sim_id)
+
+n_sim <- results_db %>% distinct(sim_id) %>% collect() %>% nrow()
+n_groups <- results_db %>% distinct(group_number) %>% collect() %>% nrow()
+
+
+results_db %>% 
+  select(sim_id, group_number, replicate_id, t)
+# assume that replicate_ids are incorrect, and 
+
+# results_db %>% 
+#   mutate(replicate_id = paste0(replicate_id, "-", ) %>% 
+#   show_query()
 
 ```
 
