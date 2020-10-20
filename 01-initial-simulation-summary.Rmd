@@ -1,0 +1,489 @@
+---
+title: "Initial Simulation Summary"
+author: "Sean Kent"
+date: "10/19/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = FALSE,
+    cache = FALSE,
+    warning = FALSE,
+    message = FALSE,
+    fig.align = "center"
+)
+
+library(odbc)
+library(DBI)
+library(here)
+library(tidyverse)
+library(dbplyr)
+library(knitr)
+library(kableExtra)
+library(ggbeeswarm)
+
+# Tables
+kable_standard <- function(...) {
+    kable(booktabs = TRUE, linesep = "", ...) %>% 
+        kable_styling(full_width = FALSE)
+}
+
+options(knitr.kable.NA = '')
+
+```
+
+
+```{r}
+# odbc::odbcListDrivers()
+# see https://db.rstudio.com/best-practices/drivers/ to install drivers
+
+con <- dbConnect(odbc(), 
+                 driver = "PostgreSQL Driver",
+                 server = "database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com",
+                 database = "postgres",
+                 uid = "postgres",
+                 # pwd = "PUT PASSWORD HERE TO KNIT THE FILE", 
+                 pwd = askpass::askpass(),
+                 port = 5432)
+
+```
+
+
+## Parameters that were varied
+
+```{r}
+sim_params_db <- tbl(con, "sim_params")
+n_sim <- sim_params_db %>% distinct(sim_id) %>% collect() %>% nrow()
+
+# n_trajectories <- sim_params_db %>% distinct(ntrajectories) %>% collect() %>% unique()
+
+sim_params_db %>% 
+  distinct(sim_id, ntrajectories) %>% 
+  count(ntrajectories) %>% 
+  arrange(ntrajectories) %>% 
+  kable_standard(caption = "Summary of number of trajectories by simulation id")
+
+
+# sim_params_db %>% 
+#   distinct(sim_id, ntrajectories)
+
+```
+
+Overall, there were `r n_sim` distinct simulation settings.  The number of trajectories for each setting is given above.  
+
+```{r}
+sim_params_db <- tbl(con, "sim_params")
+group_names <- sim_params_db %>% 
+  # filter(ntrajectories == 2) %>% 
+  # filter(ntrajectories %in% c(1, 3, 20)) %>% 
+  distinct(group_index, group_names) %>% 
+  collect() %>% 
+  mutate(group_index = as.character(group_index))
+
+```
+
+
+```{r}
+
+# group_params_db <- tbl(con, "group_params")
+# 
+# all_params <- 
+#   group_params_db %>% 
+#   distinct() %>% 
+#   collect()
+# 
+# # Skim the dataset and filter for unique values
+# 
+# all_params_wide <-   
+#   all_params %>% 
+#   select(-`_scenario_name`) %>% 
+#   pivot_wider(id_cols = sim_id,  
+#               names_from = group_number,
+#               values_from = c(everything(), -sim_id, -group_number)) %>% 
+#   mutate(across(everything(), ~ as.factor(.x)))
+
+# write_csv(all_params_wide2, here("data/2020-10-19_all-params-wide.csv"))
+all_params_wide <- read_csv(here("data/2020-10-19_all-params-wide.csv")) %>% 
+  mutate(across(where(is.double), as.factor))
+
+
+skim_df <- 
+  all_params_wide %>% 
+  skimr::skim() %>% 
+  filter(factor.n_unique > 1)
+
+# skim_df
+
+all_params_wide %>% 
+  select(sim_id, skim_df$skim_variable) %>% 
+  pivot_longer(cols = -sim_id) %>% 
+  group_by(name) %>% 
+  summarize(value = unique(value)) %>% 
+  pivot_wider() %>% 
+  pivot_longer(cols = everything(), 
+               names_to = c("variable", "Group"),
+               names_pattern = "(.*)_([:digit:])") %>% 
+  pivot_wider(names_from = variable,
+              values_from = value) %>% 
+  mutate(across(.cols = -Group, .fns = ~map(.x, ~scales::number(as.numeric(as.character(sort(.x))))))) %>% 
+  left_join(group_names, by = c("Group" = "group_index")) %>% 
+  select(Group, group_names, everything()) %>% 
+  # mutate_all(as.character) %>% 
+  kable_standard() %>% 
+  add_header_above(c(" " = 2, "Varied Parameters" = 3))
+
+
+
+```
+
+
+
+
+## Key metrics
+
+The metrics evaluated here are 
+
+- **peak** - what is the highest number of cases on campus
+- **time to peak** - at what time does the peak happen
+
+For the moment, these metrics are computed by first averaging all of the curves for a particular simulation scenario, and then calculating the metric on this average curve for each simulation scenario and each of the 8 groups.  It's important to keep in mind that some of the simulation settings have 20 trajectories, while some only have 1 or 3.
+
+
+## Results
+
+### Peak isolation capacity
+
+
+```{r}
+
+file_name <- here("data/2020-10-19_summary-of-results.csv")
+
+if (file.exists(file_name)) {
+  df <- read_csv(file_name)
+} else {
+  # Query the database to pull the new results
+  results_db <- tbl(con, "results")
+  # colnames(results_db)
+  
+  # create a table that averages over the sim_id and group 
+  dbGetQuery(con,
+             '
+           CREATE TEMP TABLE results_averaged AS
+           SELECT "sim_id", "replicate_id", "t", "group_number", AVG("QS")  + AVG("QI") AS "Q"
+           FROM "results"
+           GROUP BY "sim_id", "replicate_id", "t", "group_number"
+           ')           
+  
+  # now calculate peak and time to peak 
+  df <- 
+    dbGetQuery(con, '
+           SELECT a.*
+           FROM results_averaged a
+           INNER JOIN
+             (SELECT "sim_id", "group_number", MAX("Q") AS "peak"
+             FROM results_averaged 
+             GROUP BY "sim_id", "group_number") b
+           ON a.sim_id = b.sim_id 
+           AND a.group_number = b.group_number 
+           AND a."Q" = b."peak" ')
+  
+  df <- 
+    df %>% 
+    group_by(sim_id, group_number) %>% 
+    filter(t == min(t)) %>% 
+    ungroup()
+  
+  dbGetQuery(con, "DROP TABLE IF EXISTS results_averaged")
+  
+  pop_sizes <- all_params %>% distinct(group_number, group_name, population_size)
+  
+  df <- 
+    df %>% 
+    left_join(pop_sizes, by = "group_number") %>% 
+    mutate(Q_frac = Q / population_size)
+  
+  write_csv(df, file_name)
+}
+
+```
+
+
+
+
+
+```{r}
+df2 <- 
+  df %>% 
+  left_join(all_params_wide %>% 
+              select(sim_id, skim_df$skim_variable),
+            by = "sim_id")
+
+
+# colnames(df2)
+# dim(df2)
+```
+
+### Overview and Context 
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_name)) %>% 
+  ggplot(aes(t, Q)) +
+  geom_quasirandom(aes(color = as.factor(group)), alpha = 0.3) +
+  scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak Quarantine", y = "Quarantine Size at Peak",
+       title = "Summary of Peak vs Time of Peak in all simulations")
+
+```
+
+Overall, there's more variation in the time of peak than the peak.  In fact, there's very little variation in the peak among all of the simulation settings.  
+
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_name)) %>% 
+  ggplot(aes(t, Q_frac)) +
+  # ggplot(aes(t, Q)) +
+  geom_quasirandom(aes(color = as.factor(group))) +
+  # facet_wrap(~ as.factor(group), scales = "free_y") +
+  facet_wrap(~ as.factor(group)) +
+  scale_color_viridis_d(option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak Quarantine", y = "Fraction of Population in Quarantine at Peak ",
+       title = "Time of Peak vs Fraction in Quarantine at Peak in All Simulations",
+       subtitle = "Split by Groups") +
+  theme(legend.position = "none")
+
+  
+```
+
+Looking deeper at the fraction of population in quarantine, we can see that Grads/Undergrads have higher fractions in quarantine, but there still isn't much variation.  Changing the time to peak seems only to delay the inevitable in this model.  There are a few simulations of note in the fac/staff groups and Madison community where the time of peak is significantly delayed.  Look deeper into this
+
+
+
+```{r}
+mod_5 <- glm(interesting ~ ., data = df2 %>% 
+               filter(group_number == 5) %>% 
+               mutate(interesting = t > 30) %>% 
+               select(interesting,
+                      starts_with("initial_ID_prevalence"),
+                      starts_with("daily_outside_infection_p"), 
+                      starts_with("test_protocol_QFNR_4")) %>% 
+               mutate_if(is.factor, ~as.numeric(as.character(.x))))
+
+
+# broom::tidy(mod_5) %>% 
+#   filter(p.value < 0.05) %>% 
+#   kable_standard(caption = "significant factors for Group 5 interesting ")
+
+# plot(mod_5)  
+
+# df2 %>% 
+#   filter(group_number == 5) %>% 
+#   mutate(interesting = t > 30) %>% 
+#   select(interesting,
+#          starts_with("initial_ID_prevalence"),
+#          starts_with("daily_outside_infection_p"), 
+#          starts_with("test_protocol_QFNR_4")) %>% 
+#   group_by(interesting) %>% 
+#   # summarize(across(-interesting, ~ list(unique(.x))))
+#   summarize(tmp = list(unique(initial_ID_prevalence_7)))
+#   summarize(across(.cols = -interesting, .fns = ~map(.x, ~scales::number(as.numeric(as.character(sort(.x)))))))
+#   # summarize(across(.cols = everything(), mean))
+```
+
+
+```{r}
+mod_7 <- glm(interesting ~ ., data = df2 %>% 
+               filter(group_number == 7) %>% 
+               mutate(interesting = t > 30) %>% 
+               select(interesting,
+                      starts_with("initial_ID_prevalence"),
+                      starts_with("daily_outside_infection_p"), 
+                      starts_with("test_protocol_QFNR_4")) %>% 
+               mutate_if(is.factor, ~as.numeric(as.character(.x))))
+
+
+# broom::tidy(mod_7) %>% 
+#   filter(p.value < 0.05) %>% 
+#   kable_standard(caption = "significant factors for Group 7 interesting ")
+
+# plot(mod_5)  
+
+```
+
+
+```{r}
+mod_6 <- glm(interesting ~ ., data = df2 %>% 
+               filter(group_number == 6) %>% 
+               mutate(interesting = t > 30) %>% 
+               select(interesting,
+                      starts_with("initial_ID_prevalence"),
+                      starts_with("daily_outside_infection_p"), 
+                      starts_with("test_protocol_QFNR_4")) %>% 
+               mutate_if(is.factor, ~as.numeric(as.character(.x))))
+
+
+# broom::tidy(mod_6) %>% 
+#   filter(p.value < 0.05) %>% 
+#   kable_standard(caption = "significant factors for Group 6 interesting ")
+
+# plot(mod_5)  
+
+```
+
+
+
+The interesting points which have vastly different time of peaks depend only on the initial prevalence of that group.  See the following tables.
+
+
+```{r}
+df2 %>% 
+  filter(group_number == 5) %>% 
+  mutate(interesting = t > 30) %>% 
+  janitor::tabyl(interesting, initial_ID_prevalence_5) %>% 
+  kable_standard(caption = "Group 5") %>% 
+  add_header_above(c(" " = 1, "initial_ID_prevalence_5" = 4))
+
+
+df2 %>% 
+  filter(group_number == 6) %>% 
+  mutate(interesting = t > 30) %>% 
+  janitor::tabyl(interesting, initial_ID_prevalence_6) %>% 
+  kable_standard(caption = "Group 6") %>% 
+  add_header_above(c(" " = 1, "initial_ID_prevalence_6" = 4))
+
+df2 %>% 
+  filter(group_number == 7) %>% 
+  mutate(interesting = t > 30) %>% 
+  janitor::tabyl(interesting, initial_ID_prevalence_7) %>% 
+  kable_standard(caption = "Group 7") %>% 
+  add_header_above(c(" " = 1, "initial_ID_prevalence_7" = 4))
+
+
+
+```
+
+
+
+### Predictors of Peak Quarantine Fraction 
+
+```{r}
+mod <- lm(Q_frac ~ ., data = select(df2, -sim_id, -replicate_id, -t, -group_number, -group_name, -population_size, -Q))  
+# mod <- lm(Q ~ ., data = select(df2, -sim_id, -replicate_id, -t, -group_number, -group_name, -population_size, -Q_frac)) # results are similar here.
+
+# broom::tidy(mod) %>%
+#   arrange(desc(abs(statistic)))
+
+anova(mod) %>% 
+  broom::tidy() %>% 
+  arrange(p.value) %>% 
+  kable_standard(caption = "Predictors of Peak Quarantine Fraction")
+
+# plot(mod)
+# normality is pretty trash, maybe need to transform Q_frac
+# NOTE: can't estimate interaction effects with the current sample size/design
+
+
+```
+### Differences in Peak Quarantine Population Across Parameters 
+
+
+```{r, fig.height=10, fig.width=10}
+
+peak_quarantine_list <- list()
+varied_params <- c("initial_ID_prevalence", "test_protocol_QFNR", "daily_outside_infection_p")
+for (parameter in varied_params) {
+  vars <- colnames(select(df2, starts_with(parameter)))
+
+  my_summarise <- function(df, group_var) {
+    # group_var <- enquo(group_var)
+    df %>% 
+      mutate(group = paste0(group_number, ": ", group_name)) %>% 
+      group_by(.data[[group_var]], group) %>% 
+      # summarize_at(c("Q", "Q_frac"), mean) %>% 
+      summarize(n = n(), across(c("Q", "Q_frac"), mean)) %>% 
+      ungroup() %>% 
+      rename(parameter = 1) %>% 
+      mutate(var = group_var)
+  }
+  
+  # my_summarise(df2, "initial_ID_prevalence_4")
+  tmp <- map(vars, ~ my_summarise(df = df2, group_var = .x))
+  sum_stat <- bind_rows(tmp) %>% 
+    mutate(parameter = forcats::fct_reorder(parameter, as.numeric(as.character(parameter))))
+  
+  peak_quarantine_list[[parameter]] <- sum_stat  
+}
+
+plot1 <- function(data) {
+  data %>% 
+    ggplot(aes(parameter, as.factor(group))) +
+    geom_tile(aes(fill = Q_frac), color = "white") +
+    geom_text(aes(label = paste0(round(Q), " (", n, ")"))) +
+    facet_wrap(vars(var), scales = "free_x", ncol = 2) +
+    scale_x_discrete(labels = function(x) scales::number(as.numeric(as.character(x)))) +
+    scale_y_discrete(labels = 0:7) +
+    scale_fill_viridis_c(name = "Fraction of Group", begin = 0.1, direction = 1, option = "cividis") +
+    theme_minimal() +
+    labs(x = NULL, y = "Group",
+         title = "[Peak quarantine capacity (n_sim)] across groups and parameter values",
+         subtitle = "Each plot represents changes to a single parameter, averaged over simulations")
+}
+
+peak_quarantine_list$initial_ID_prevalence %>% plot1()
+```
+
+Across changes to the initial_ID_prevalence, we see only small differences in the peak quarantine capacity.  The largest differences come when the prevalence for group 7 (Madison community) is altered, and it seems that this mostly doesn't spill over into the other compartments.  Groups 3 and 4 seem to have the largest variation in the fraction of the group that is quarantined at the peak 
+
+```{r, fig.height=10, fig.width=10}
+plot2 <- function(data) {
+  data %>%
+    mutate(var_group = str_remove_all(var, "[[:alpha:]_]")) %>% 
+    ggplot(aes(parameter, var_group)) +
+    geom_tile(aes(fill = Q_frac), color = "white") +
+    geom_text(aes(label = paste0(round(Q), " (", n, ")")), size = 3) +
+    facet_wrap(vars(group), scales = "free_x", ncol = 2) +
+    scale_x_discrete(labels = function(x) scales::number(as.numeric(as.character(x)))) +
+    scale_y_discrete(labels = 0:7) +
+    scale_fill_viridis_c(name = "Fraction of Group", begin = 0.1, direction = 1, option = "cividis") +
+    theme_minimal() +
+    labs(x = NULL, y = "Group",
+         title = "[Peak quarantine capacity (n_sim)] across variable group and parameter values",
+         subtitle = "Each plot represents a single group, averaged over simulations")
+}
+
+peak_quarantine_list$initial_ID_prevalence %>% plot2()
+```
+
+Here's a slightly different grouping of the same above data.  Now, the y-axis represents the group that had the parameter changed, and the facets represent the groups.  That is, we switch the facet and y-axis variables.  
+
+What jumps out is how little variation there is in each plot.  This means that relative to the size of the population, the fraction of individuals in quarantine at the peak has little variation over the simulation parameters chosen, when compared with the variation across the groups.  
+
+Most of the boxes are only represented by a few simulations.  
+
+
+
+
+```{r, fig.height=10, fig.width=10}
+peak_quarantine_list[["daily_outside_infection_p"]] %>% plot1()
+```
+
+Similar story here.  It doesn't look like there's much variation at all between the parameters.  If any, it's in groups 3 and 4.  
+
+```{r, fig.height=10, fig.width=10}
+peak_quarantine_list[["test_protocol_QFNR"]] %>% plot1()
+```
+
+
+Almost no variation across these parameters
+
+
+
+
+
+
+
+
+
+
