@@ -17,6 +17,9 @@ library(dbplyr)
 
 
 ```{r}
+# see https://db.rstudio.com/databases/postgresql/ for more information
+
+# using the odbc package with a database driver
 # odbc::odbcListDrivers()
 # see https://db.rstudio.com/best-practices/drivers/ to install drivers
 
@@ -28,6 +31,16 @@ con <- dbConnect(odbc(),
                  pwd = askpass::askpass(),
                  port = 5432)
 
+# using the RPostgres package
+# see https://github.com/r-dbi/RPostgres/ to connect to a specific postgres database
+
+library(DBI)
+con <- dbConnect(RPostgres::Postgres(),dbname = 'postgres', 
+                 host = 'database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com', 
+                 port = 5432, 
+                 user = 'postgres', 
+                 password = askpass::askpass())
+
 ```
 
 ## Basic exploration of the sim_params table
@@ -35,6 +48,9 @@ con <- dbConnect(odbc(),
 ```{r}
 # odbc::dbExistsTable(con, "sim_params")
 odbc::odbcListColumns(con, "sim_params")
+
+# RPostgres::dbListTables(con)
+RPostgres::dbListFields(con, "sim_params")
 ```
 
 
