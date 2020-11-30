@@ -1,0 +1,12 @@
+name: cornellparametersweep
+title: CornellParameterSweep
+username: spkent
+account: spkent
+server: data-viz.it.wisc.edu
+hostUrl: https://data-viz.it.wisc.edu/__api__
+appId: 80
+bundleId: 366
+url: https://data-viz.it.wisc.edu/cornell-parameter-sweep/
+when: 1606242305.58607
+asMultiple: FALSE
+asStatic: FALSE

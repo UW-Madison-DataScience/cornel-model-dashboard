@@ -1,0 +1,499 @@
+---
+title: "Initial Simulation Summary"
+author: "Sean Kent"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = FALSE,
+    cache = FALSE,
+    warning = FALSE,
+    message = FALSE,
+    fig.align = "center"
+)
+
+library(odbc)
+library(DBI)
+library(here)
+library(tidyverse)
+library(dbplyr)
+library(knitr)
+library(kableExtra)
+library(ggbeeswarm)
+
+# Tables
+kable_standard <- function(...) {
+    kable(booktabs = TRUE, linesep = "", ...) %>% 
+        kable_styling(full_width = FALSE)
+}
+
+options(knitr.kable.NA = '')
+
+```
+
+
+```{r}
+# odbc::odbcListDrivers()
+# see https://db.rstudio.com/best-practices/drivers/ to install drivers
+
+con <- dbConnect(odbc(), 
+                 driver = "PostgreSQL Driver",
+                 server = "database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com",
+                 database = "postgres",
+                 uid = "postgres",
+                 # pwd = "PUT PASSWORD HERE TO KNIT THE FILE",
+                 pwd = "YxDi7HnjfpBxHKQ",
+                 # pwd = askpass::askpass(),
+                 port = 5432)
+
+```
+
+
+## Parameters that were varied
+
+```{r}
+sim_params_db <- tbl(con, "sim_params")
+n_sim <- sim_params_db %>% distinct(sim_id) %>% collect() %>% nrow()
+
+# n_trajectories <- sim_params_db %>% distinct(ntrajectories) %>% collect() %>% unique()
+
+sim_params_db %>% 
+  distinct(sim_id, ntrajectories) %>% 
+  count(ntrajectories) %>% 
+  arrange(ntrajectories) %>% 
+  kable_standard(caption = "Summary of number of trajectories by simulation id")
+
+
+# sim_params_db %>% 
+#   distinct(sim_id, ntrajectories)
+
+```
+
+Overall, there were `r n_sim` distinct simulation settings.  The number of trajectories for each setting is given above.  
+
+```{r}
+sim_params_db <- tbl(con, "sim_params")
+group_names <- sim_params_db %>% 
+  # filter(ntrajectories == 2) %>% 
+  # filter(ntrajectories %in% c(1, 3, 20)) %>% 
+  distinct(group_index, group_names) %>% 
+  collect() %>% 
+  mutate(group_index = as.character(group_index))
+
+```
+
+
+```{r}
+
+group_params_db <- tbl(con, "group_params")
+
+all_params <-
+  group_params_db %>%
+  distinct() %>%
+  collect()
+
+# Skim the dataset and filter for unique values
+
+all_params_wide <-
+  all_params %>%
+  select(-`_scenario_name`) %>%
+  pivot_wider(id_cols = sim_id,
+              names_from = group_number,
+              values_from = c(everything(), -sim_id, -group_number)) %>%
+  mutate(across(everything(), ~ as.factor(.x)))
+
+# write_csv(all_params_wide2, here("data/2020-10-19_all-params-wide.csv"))
+# all_params_wide <- read_csv(here("data/2020-10-19_all-params-wide.csv")) %>% 
+#   mutate(across(where(is.double), as.factor))
+
+
+skim_df <- 
+  all_params_wide %>% 
+  skimr::skim() %>% 
+  filter(factor.n_unique > 1)
+
+# skim_df
+
+all_params_wide %>% 
+  select(sim_id, skim_df$skim_variable) %>% 
+  pivot_longer(cols = -sim_id) %>% 
+  group_by(name) %>% 
+  summarize(value = unique(value)) %>% 
+  pivot_wider() %>% 
+  pivot_longer(cols = everything(), 
+               names_to = c("variable", "Group"),
+               names_pattern = "(.*)_([:digit:])") %>% 
+  pivot_wider(names_from = variable,
+              values_from = value) %>% 
+  mutate(across(.cols = -Group, .fns = ~map(.x, ~scales::number(as.numeric(as.character(sort(.x))))))) %>% 
+  left_join(group_names, by = c("Group" = "group_index")) %>% 
+  select(Group, group_names, everything()) %>% 
+  # mutate_all(as.character) %>% 
+  kable_standard() %>% 
+  add_header_above(c(" " = 2, "Varied Parameters" = 3))
+
+
+
+```
+
+
+
+
+## Key metrics
+
+The metrics evaluated here are 
+
+- **peak** - what is the highest number reached over the time span
+- **time to peak** - at what time does the peak happen
+- **cumulative numbers** - what is the total number over the trajectory
+
+Note: I'm not 100% sure how to get cumulative numbers for the quarantine population, since people are counted in quarantine over multiple time periods.  
+
+
+## Results - Peak isolation capacity
+
+
+```{r}
+
+file_name <- here("data/2020-10-27_summary-of-results_quarantine.csv")
+
+if (file.exists(file_name)) {
+  df <- read_csv(file_name)
+} else {
+  # Query the database to pull the new results
+  results_db <- tbl(con, "results")
+  # colnames(results_db)
+  
+  # create a table that averages over the sim_id and group 
+  dbGetQuery(con,
+             '
+           CREATE TEMP TABLE results_averaged AS
+           SELECT "sim_id", "replicate_id", "t", "group_number", AVG("QS")  + AVG("QI") AS "Q"
+           FROM "results"
+           GROUP BY "sim_id", "replicate_id", "t", "group_number"
+           ')           
+  
+  # now calculate peak and time to peak 
+  df <- 
+    dbGetQuery(con, '
+           SELECT a.*
+           FROM results_averaged a
+           INNER JOIN
+             (SELECT "sim_id", "group_number", MAX("Q") AS "peak"
+             FROM results_averaged 
+             GROUP BY "sim_id", "group_number") b
+           ON a.sim_id = b.sim_id 
+           AND a.group_number = b.group_number 
+           AND a."Q" = b."peak" ')
+  
+  df <- 
+    df %>% 
+    group_by(sim_id, group_number) %>% 
+    filter(t == min(t)) %>% 
+    ungroup()
+  
+  dbGetQuery(con, "DROP TABLE IF EXISTS results_averaged")
+  
+  pop_sizes <- all_params %>% distinct(group_number, population_size)
+  
+  df <- 
+    df %>% 
+    left_join(pop_sizes, by = "group_number") %>% 
+    mutate(Q_frac = Q / population_size)
+  
+  write_csv(df, file_name)
+}
+
+```
+
+
+
+```{r}
+df2 <- 
+  df %>% 
+  left_join(all_params_wide %>% 
+              select(sim_id, skim_df$skim_variable),
+            by = "sim_id") %>% 
+  left_join(group_names %>% mutate(group_index = as.integer(group_index)),
+            by = c("group_number" = "group_index"))
+
+df2 <- df2 %>% 
+  mutate(across(c("t", "group_number"), as.double))
+
+# colnames(df2)
+# dim(df2)
+```
+
+### Overview and Context 
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_names)) %>%
+  ggplot(aes(t, Q)) +
+  geom_quasirandom(aes(color = as.factor(group)), alpha = 0.5) +
+  scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak Quarantine", y = "Quarantine Size at Peak",
+       title = "Summary of Peak vs Time of Peak in all simulations")
+
+```
+
+<!-- Overall, there's more variation in the time of peak than the peak.  In fact, there's very little variation in the peak among all of the simulation settings.   -->
+
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_names)) %>% 
+  ggplot(aes(t, Q_frac)) +
+  # ggplot(aes(t, Q)) +
+  geom_quasirandom(aes(color = as.factor(group))) +
+  # facet_wrap(~ as.factor(group), scales = "free_y") +
+  facet_wrap(~ as.factor(group)) +
+  scale_color_viridis_d(option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak Quarantine", y = "Fraction of Population in Quarantine at Peak ",
+       title = "Time of Peak vs Fraction in Quarantine at Peak in All Simulations",
+       subtitle = "Split by Groups") +
+  theme(legend.position = "none")
+
+  
+```
+
+<!-- Looking deeper at the fraction of population in quarantine, we can see that Grads/Undergrads have higher fractions in quarantine, but there still isn't much variation.  Changing the time to peak seems only to delay the inevitable in this model.  There are a few simulations of note in the fac/staff groups and Madison community where the time of peak is significantly delayed.  Look deeper into this -->
+
+
+
+```{r}
+plot_fun <- function(data, y, fill, y_lab = NULL) {
+  data %>% 
+    # mutate(group = paste0(group_number, ": ", group_names)) %>% 
+    ggplot(aes_(~as.factor(group_number), as.name(y), fill = as.name(fill))) +
+    # geom_violin(draw_quantiles = seq(0, 1, by = 0.25), scale = "width", color = "grey50") +
+    geom_quasirandom(aes_(color = as.name(fill)), dodge.width = 0.5) +
+    stat_summary(aes_(color = as.name(fill)), geom = "point", shape = 3) +
+    geom_hline(yintercept = 0) +
+    
+    scale_fill_viridis_d(option = "magma", end = 0.8, begin = 0.2, aesthetics = c("color", "fill")) +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    labs(x = "Group",
+         y = y_lab,
+         title = fill) 
+
+}
+
+vars_to_plot <- setdiff(skim_df$skim_variable, "sim_id")
+```
+
+
+### Fraction in Quarantine at Peak
+
+Look across changes to a single parameter 
+
+
+```{r}
+plots <- map(vars_to_plot, ~plot_fun(df2, y = "Q_frac", fill = .x,
+                                     y_lab = "Fraction of Population in Quarantine at Peak") +
+               scale_y_continuous(labels = scales::percent))
+
+walk(plots, print)
+
+
+```
+
+### Time of peak quarantine capacity 
+
+Look across changes to a single parameter 
+
+```{r}
+plots <- map(vars_to_plot, ~plot_fun(df2, y = "t", fill = .x,
+                                     y_lab = "Time of Peak") )
+
+walk(plots, print)
+
+```
+
+
+
+
+
+```{r, eval = FALSE}
+## Check what constitutes the entire population
+results_db %>% 
+  mutate(total_pop = S + QS + QI + R + 
+           E_0 + E_1 + E_2 + E_3 + E_4 + E_5 + E_6 + 
+           pre_ID_0 + pre_ID_1 + pre_ID_2 + pre_ID_3 + 
+           ID_0 + ID_1 + ID_2 + ID_3 + ID_4 + ID_5 + ID_6 + ID_7 + 
+           SyID_mild_0 + SyID_mild_1 + SyID_mild_2 + SyID_mild_3 + SyID_mild_4 + SyID_mild_5 + SyID_mild_6 + SyID_mild_7 + SyID_mild_8 + SyID_mild_9 + SyID_mild_10 + SyID_mild_11 + SyID_mild_12 + SyID_mild_13 + SyID_mild_14 + SyID_mild_15 + SyID_mild_16 + SyID_mild_17 + SyID_mild_18 + SyID_mild_19 + 
+           SyID_severe_0 + SyID_severe_1 + SyID_severe_2 + SyID_severe_3 + SyID_severe_4 + SyID_severe_5 + SyID_severe_6 + SyID_severe_7 + SyID_severe_8 + SyID_severe_9 + SyID_severe_10 + SyID_severe_11 + SyID_severe_12 + SyID_severe_13 + SyID_severe_14 + SyID_severe_15 + SyID_severe_16 + SyID_severe_17 + SyID_severe_18 + SyID_severe_19) %>% 
+  select(group_number, t, total_pop, everything()) 
+
+# total with covid is everything except S, QS, and R 
+# can pull cumulative numbers for the cumulative thing 
+
+
+```
+
+***
+
+
+## Results - Peak of population with COVID
+
+
+```{r}
+
+file_name <- here("data/2020-10-27_summary-of-results_covid.csv")
+
+if (file.exists(file_name)) {
+  df <- read_csv(file_name)
+} else {
+  # Query the database to pull the new results
+  results_db <- tbl(con, "results")
+  # colnames(results_db)
+  
+  # create a table that averages over the sim_id and group 
+  dbGetQuery(con,
+             '
+           CREATE TEMP TABLE results_averaged AS
+           SELECT "sim_id", "replicate_id", "t", "group_number", 
+           "cumulative_mild" + "cumulative_severe" + "cumulative_outside_infections" AS "cumulative_covid_pop", 
+           "QI" + "E_0" + "E_1" + "E_2" + "E_3" + "E_4" + "E_5" + "E_6" + "pre_ID_0" + "pre_ID_1" + "pre_ID_2" + "pre_ID_3" + "ID_0" + "ID_1" + "ID_2" + "ID_3" + "ID_4" + "ID_5" + "ID_6" + "ID_7" + "SyID_mild_0" + "SyID_mild_1" + "SyID_mild_2" + "SyID_mild_3" + "SyID_mild_4" + "SyID_mild_5" + "SyID_mild_6" + "SyID_mild_7" + "SyID_mild_8" + "SyID_mild_9" + "SyID_mild_10" + "SyID_mild_11" + "SyID_mild_12" + "SyID_mild_13" + "SyID_mild_14" + "SyID_mild_15" + "SyID_mild_16" + "SyID_mild_17" + "SyID_mild_18" + "SyID_mild_19" + "SyID_severe_0" + "SyID_severe_1" + "SyID_severe_2" + "SyID_severe_3" + "SyID_severe_4" + "SyID_severe_5" + "SyID_severe_6" + "SyID_severe_7" + "SyID_severe_8" + "SyID_severe_9" + "SyID_severe_10" + "SyID_severe_11" + "SyID_severe_12" + "SyID_severe_13" + "SyID_severe_14" + "SyID_severe_15" + "SyID_severe_16" + "SyID_severe_17" + "SyID_severe_18" + "SyID_severe_19" AS "covid_pop"
+           FROM "results"
+           ')           
+  
+  # now calculate peak and time to peak 
+  df <- 
+    dbGetQuery(con, '
+           SELECT a.*
+           FROM results_averaged a
+           INNER JOIN
+             (SELECT "sim_id", "group_number", MAX("covid_pop") AS "peak"
+             FROM results_averaged 
+             GROUP BY "sim_id", "group_number") b
+           ON a.sim_id = b.sim_id 
+           AND a.group_number = b.group_number 
+           AND a."covid_pop" = b."peak" ')
+  
+  df <- 
+    df %>% 
+    group_by(sim_id, group_number) %>% 
+    filter(t == min(t)) %>% 
+    ungroup()
+  
+  dbGetQuery(con, "DROP TABLE IF EXISTS results_averaged")
+  
+  pop_sizes <- all_params %>% distinct(group_number, population_size)
+  
+  df <- 
+    df %>% 
+    left_join(pop_sizes, by = "group_number") %>% 
+    mutate(covid_frac = covid_pop / population_size,
+           cumulative_covid_frac = cumulative_covid_pop / population_size)
+  
+  write_csv(df, file_name)
+}
+
+```
+
+
+
+```{r}
+df2 <- 
+  df %>% 
+  left_join(all_params_wide %>% 
+              select(sim_id, skim_df$skim_variable),
+            by = "sim_id") %>% 
+  left_join(group_names %>% mutate(group_index = as.integer(group_index)),
+            by = c("group_number" = "group_index"))
+
+df2 <- df2 %>% 
+  mutate(across(c("t", "group_number"), as.double))
+
+# colnames(df2)
+# dim(df2)
+```
+
+
+### Overview and Context 
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_names)) %>%
+  ggplot(aes(t, covid_pop)) +
+  geom_quasirandom(aes(color = as.factor(group)), alpha = 0.5) +
+  scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak COVID", y = "Covid Prevalence at Peak",
+       title = "Summary of Peak vs Time of Peak in all simulations")
+
+```
+
+<!-- Overall, there's more variation in the time of peak than the peak.  In fact, there's very little variation in the peak among all of the simulation settings.   -->
+
+
+```{r}
+df2 %>% 
+  mutate(group = paste0(group_number, ": ", group_names)) %>% 
+  ggplot(aes(t, covid_frac)) +
+  # ggplot(aes(t, Q)) +
+  geom_quasirandom(aes(color = as.factor(group))) +
+  # facet_wrap(~ as.factor(group), scales = "free_y") +
+  facet_wrap(~ as.factor(group)) +
+  scale_color_viridis_d(option = "B", begin = 0.2, end = 0.8) +
+  labs(x = "Time of Peak COVID cases", y = "Fraction of Population w/ COVID at Peak ",
+       title = "Time of Peak vs Fraction w/ COVID at Peak in All Simulations",
+       subtitle = "Split by Groups") +
+  theme(legend.position = "none")
+
+  
+```
+
+
+
+### Percentage with COVID at Peak
+
+Look across changes to a single parameter 
+
+
+```{r}
+plots <- map(vars_to_plot, ~plot_fun(df2, y = "covid_frac", fill = .x,
+                                     y_lab = "Percentage with COVID at Peak") +
+               scale_y_continuous(labels = scales::percent))
+
+walk(plots, print)
+
+
+```
+
+### Time of peak covid 
+
+Look across changes to a single parameter 
+
+
+```{r}
+plots <- map(vars_to_plot, ~plot_fun(df2, y = "t", fill = .x,
+                                     y_lab = "Time of Peak COVID prevalence")) 
+
+walk(plots, print)
+
+
+```
+
+### Cumulative Percentage with COVID at end
+
+Look across changes to a single parameter 
+
+
+```{r}
+plots <- map(vars_to_plot, ~plot_fun(df2, y = "cumulative_covid_frac", fill = .x,
+                                     y_lab = "Cumulative Percentage with COVID at end") +
+               scale_y_continuous(labels = scales::percent))
+
+walk(plots, print)
+
+
+```
+
+
+
+
+
