@@ -26,9 +26,8 @@ con <- dbConnect(odbc(),
                  # database = "postgres",
                  database = "test",
                  uid = "postgres",
-                 pwd = "YxDi7HnjfpBxHKQ",
                  # pwd = "PUT PASSWORD HERE TO KNIT THE FILE", 
-                 # pwd = askpass::askpass(),
+                 pwd = askpass::askpass(),
                  port = 5432)
 
 print("Connection successful!")
