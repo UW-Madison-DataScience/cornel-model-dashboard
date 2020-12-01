@@ -17,8 +17,8 @@ print(odbc::odbcListDrivers()$name)
 
 ## Initial setup ----------------------------------------------------------
 
-print("Trying to connect to SQL db at database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com...")
 ## Connection to SQL database 
+print("Trying to connect to SQL db at database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com...")
 con <- dbConnect(odbc(), 
                  driver = "PostgreSQL", # for Rstudio Connect
                  # driver = "PostgreSQL Driver", # for local driver
@@ -26,24 +26,11 @@ con <- dbConnect(odbc(),
                  # database = "postgres",
                  database = "test",
                  uid = "postgres",
-                 pwd = "YxDi7HnjfpBxHKQ",
                  # pwd = "PUT PASSWORD HERE TO KNIT THE FILE", 
                  # pwd = askpass::askpass(),
                  port = 5432)
 
 print("Connection successful!")
-
-## Group names 
-sim_params_db <- tbl(con, "sim_params")
-group_names <- sim_params_db %>% 
-    # filter(ntrajectories == 2) %>% 
-    # filter(ntrajectories %in% c(1, 3, 20)) %>% 
-    distinct(group_index, group_names) %>% 
-    collect() %>% 
-    mutate(group_index = as.character(group_index)) %>% 
-    mutate(across(where(bit64::is.integer64), as.numeric))
-
-group_dict <- deframe(group_names)
 
 ## Parameters that get varied across simulations 
 all_params <-
@@ -77,74 +64,113 @@ varied_parameters <-
     summarize(value = unique(value)) %>% 
     pivot_wider(values_fn = list) %>% 
     pivot_longer(cols = everything(), 
-                 names_to = c("variable", "Group"),
+                 names_to = c("variable", "group_number"),
                  names_pattern = "(.*)_([:digit:])") %>% 
     pivot_wider(names_from = variable,
                 values_from = value) %>% 
-    mutate(across(.cols = -Group, .fns = ~map(.x, ~readable_number(sort(.x)))))
-    # mutate(across(.cols = -Group, .fns = ~map(.x, ~scales::number(as.numeric(as.character(sort(.x))))))) 
+    mutate(across(.cols = -group_number, .fns = ~map(.x, ~readable_number(sort(.x)))))
 
 parameter_choices <- colnames(varied_parameters)[-1]
 
-pop_sizes <- all_params %>% distinct(group_number, population_size)
+## Metrics and values from results
+metrics <- tbl(con, "metrics") %>% 
+  collect() %>% 
+  pivot_longer(cols = -c(sim_id, group_number), 
+               names_to = "metric_name", 
+               values_to = "metric_value") %>% 
+  mutate(group_number = as.double(group_number))
 
+metric_choices <- list(
+  `COVID-19 Cases` = list(
+    "Peak active cases", 
+    "Peak % with COVID-19",
+    "Time of peak COVID-19 cases",
+    "Cumulative cases",
+    "Cumulative % with COVID-19"
+  ),
+  `Isolation Capacity` = list(
+    "Peak quarantine census",
+    "Peak % in quarantine",         
+    "Time of peak quarantine"   
+  )
+)
+
+percent_metrics <- c("Peak % with COVID-19", "Cumulative % with COVID-19", "Peak % in quarantine")
+
+## Group names 
+group_names <- tribble(
+  ~group_number, ~group_name, ~group_name2, ~group_name_db,
+  0, "UG (Dorm)", "UG \n(Dorm)", "undergraduates_dorm",
+  1, "UG (Off Campus)", "UG \n(Off Campus)", "undergraduates_off_campus",
+  2, "Grad (Research)", "Grad \n(Research)", "grad_research",
+  3, "Grad (Teaching)", "Grad \n(Teaching)", "grad_teaching",
+  4, "F/S (Student Facing)", "F/S \n(Student Facing)", "fac_staff_student_facing",
+  5, "F/S (Other)", "F/S \n(Other)", "fac_staff_non_student_facing",
+  6, "F/S (WFH)", "F/S \n(WFH)", "fac_staff_WFH",
+  7, "Communitiy", "Communitiy", "community"
+)
+
+group_dict <- group_names %>% select(group_number, group_name) %>% deframe()
+group_dict2 <- group_names %>% select(group_number, group_name2) %>% deframe()
+group_dict_rev <- group_names %>% select(group_name, group_number) %>% deframe()
+
+## Plot themes 
 theme_set(theme_minimal(base_size = 16))
 point_size = 2
 
 ## Helper functions ------------------------------------------------------------
 
-plot_fun <- function(data, y, fill, y_lab = NULL) {
+
+scatter_plot_overview <- function(data, x, y) {
+  p <- data %>% 
+    # mutate(group = paste0(group_number, ": ", group_names)) %>%
+    ggplot(aes_(as.name(x), as.name(y))) +
+    geom_quasirandom(aes(color = as.factor(group_number)), alpha = 1, size = point_size) +
+    # scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
+    scale_color_fish_d(name = "Group", option = "Coris_gaimard",
+                       labels = group_dict) +
+    labs(title = "COVID-19 Cases: Overview of all simulations ")    
+  
+  if (x %in% percent_metrics) {
+    p <- p + scale_x_continuous(labels = scales::percent)
+  }
+  if (y %in% percent_metrics) {
+    p <- p + scale_y_continuous(labels = scales::percent)
+  }
+  
+  p
+}
+
+one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     alpha <- exp(-nrow(data) / (5000 / log(2)))
+    fill_match <- str_match(fill, "([a-z_]+)_(\\d+)")
+    name = paste0(fill_match[2], " in ", group_dict[fill_match[3]])
   
     p <- data %>% 
-        # mutate(group = paste0(group_number, ": ", group_names)) %>% 
         ggplot(aes_(~as.factor(group_number), as.name(y), fill = as.name(fill))) +
-        # geom_violin(draw_quantiles = seq(0, 1, by = 0.25), scale = "width", color = "grey50") +
         geom_quasirandom(aes_(color = as.name(fill)), dodge.width = 0.5, size = point_size, alpha = alpha) +
         stat_summary(aes_(color = as.name(fill)), fun = mean, geom = "point", shape = 3, size = point_size) +
         geom_hline(yintercept = 0) +
+        scale_x_discrete(labels = group_dict2) +
         scale_fill_viridis_d(option = "magma", end = 0.8, begin = 0.2, aesthetics = c("color", "fill"),
+                             name = name, 
                              labels = readable_number) +
-        # theme_minimal() +
         theme(legend.position = "bottom") +
-        labs(x = "Group",
-             y = y_lab,
+        labs(x = NULL,
              title = "Results of Cornell Model across groups") 
     
-    if (y %in% c("covid_frac", "cumulative_covid_frac", "Q_frac")) {
+    if (y %in% percent_metrics) {
         p <- p + scale_y_continuous(labels = scales::percent)
     }
     
     p
+    # TODO: update the name of the color legend
 }
-
-# df_isolation <- read_csv(here("data/2020-10-27_summary-of-results_quarantine.csv"))
-# df_cases <- read_csv(here("data/2020-10-27_summary-of-results_covid.csv"))
-# TODO: consider making these reactive to the input so only the data that's needed is pulled 
-
-
-# print(df_cases)
-# print(df_isolation)
-
-metric_choices <- list(
-    "Cases" = c(
-        "Peak active cases" = "covid_pop",
-        "Peak % with COVID-19" = "covid_frac",
-        "Cumulative cases" = "cumulative_covid_pop",
-        "Cumulative % with COVID-19" = "cumulative_covid_frac",
-        "Time of peak COVID-19 cases" = "t"
-    ),
-    "Isolation" = c(
-        "Peak quarantine census" = "Q",
-        "Peak % in quarantine" = "Q_frac",
-        "Time of peak quarantine" = "t"
-    )
-)
 
 ## UI --------------------------------------------------------------------------
 
 make_param_filter_ui <- function(x, var) {
-  var_param_list <- x %>% select(Group, !!var) %>% deframe()
+  var_param_list <- x %>% select(group_number, !!var) %>% deframe()
 
   group_selects <- 
     var_param_list %>% 
@@ -247,44 +273,55 @@ body <- dashboardBody(
             tabName = "dashboard",
             ## Inputs ----------------------------------------------------------------
             column(width = 3,
-                   ## Outcomes of interest
-                   box(title = "Outcomes", width = NULL, solidHeader = TRUE, status = input_element_color,
+                   ## Box to pick plot and axes 
+                   box(title = "Change selection to update plot", width = NULL, solidHeader = TRUE, status = input_element_color,
                        collapsible = TRUE, collapsed = FALSE,
-                       selectInput("outcome",
-                                   "Outcome",
-                                   choices = c("Cases", "Isolation"),
-                                   selected = "Cases",
+                       selectInput("plot_type",
+                                   "Plot type",
+                                   choices = c("Scatter plot overview (2 metrics)", 
+                                               "Parameter comparison (1 metric)"),
+                                   selected = "Scatter plot overview (2 metrics)",
                                    selectize = TRUE),
-                       selectInput("metric",
-                                   "Metric to plot",
-                                   choices = c(
-                                       "covid_pop",
-                                       "cumulative_covid_pop",
-                                       "covid_frac",
-                                       "cumulative_covid_frac",
-                                       "t"
-                                   ),
-                                   selected = "covid_pop",
-                                   selectize = TRUE)
-                   ),
-                   ## Parameter to evaluate 
-                   box(title = "Select Parameter to Show Results", width = NULL, solidHeader = TRUE, status = input_element_color,
-                       collapsible = TRUE, collapsed = FALSE,
-                       selectInput("parameter1",
-                                   "Parameter of Interest",
-                                   choices = c("(Overview of all parameters)" = " ", parameter_choices),
-                                   # selected = parameter_choices[1],
-                                   selectize = TRUE),
-                       selectInput("group",
-                                   "Group to change parameter in",
-                                   choices = c(0),
-                                   # selected = output$group_choices[1],
-                                   selectize = TRUE)
-                   ),
-                   box(title = "Group Codes", width = NULL, solidHeader = TRUE, status = input_element_color,
-                       collapsible = TRUE, collapsed = FALSE,
-                       tableOutput("group_table")
+                       tabsetPanel(
+                         id = "plot_axes",
+                         type = "hidden", 
+                         # Show these when plot_type == "Scatter plot overview (2 metrics)"
+                         tabPanel("Scatter plot overview (2 metrics)",
+                                  selectInput("metric_y", 
+                                              "Metric to plot (y-axis)",
+                                              choices = metric_choices,
+                                              selected = "Peak active cases",
+                                              selectize = TRUE),
+                                  selectInput("metric_x",
+                                              "Metric to plot (x-axis)",
+                                              choices = metric_choices,
+                                              selected = "Time of peak COVID-19 cases",
+                                              selectize = TRUE),
+                         ),
+                         # Show these when plot_type == "Parameter comparison (1 metric)"
+                         tabPanel("Parameter comparison (1 metric)",
+                                  selectInput("metric", 
+                                              "Metric to plot (y-axis)",
+                                              choices = metric_choices,
+                                              selected = "Peak active cases",
+                                              selectize = TRUE),
+                                  selectInput("parameter1",
+                                              "Parameter of Interest (color)",
+                                              choices = c(parameter_choices),
+                                              # selected = parameter_choices[1],
+                                              selectize = TRUE),
+                                  selectInput("group",
+                                              "Group to change parameter in",
+                                              choices = c(0),
+                                              # selected = output$group_choices[1],
+                                              selectize = TRUE)
+                         )
+                       )
                    )
+                   # box(title = "Group Codes", width = NULL, solidHeader = TRUE, status = input_element_color,
+                   #     collapsible = TRUE, collapsed = FALSE,
+                   #     tableOutput("group_table")
+                   # )
                    # ## Second parameter to evaluate (TODO)
                    # box(title = "Parameters", width = NULL, solidHeader = TRUE, status = input_element_color,
                    #     collapsible = TRUE, collapsed = FALSE,
@@ -300,16 +337,6 @@ body <- dashboardBody(
             ),
             ## Outputs: plot and metrics ---------------------------------------------
             column(width = 9, 
-                   # fluidRow(
-                   #     valueBoxOutput("testing_cost_box", width = 4),
-                   #     valueBoxOutput("number_tested_box", width = 4),
-                   #     valueBoxOutput("average_iu_census_box", width = 4),
-                   # ),
-                   # fluidRow(
-                   #     valueBoxOutput("infections_box", width = 4),
-                   #     valueBoxOutput("number_confirmatory_tests_box", width = 4),
-                   #     valueBoxOutput("average_pct_isolated_box", width = 4),
-                   # ),
                    box(plotOutput("plot1", height = "600px"), width = 400)
             )
         ),
@@ -328,7 +355,7 @@ ui <- dashboardPage(header, sidebar, body)
 server <- function(input, output, session) {
     
     filter_sims <- function(var) {
-      var_param_list <- varied_parameters %>% select(Group, !!var) %>% deframe()
+      var_param_list <- varied_parameters %>% select(group_number, !!var) %>% deframe()
       
       param_index <- function(var, group) {
         id <- paste0(var, "_", group)
@@ -350,123 +377,29 @@ server <- function(input, output, session) {
       all_params_wide$sim_id[idx]
     })
     
-    
-    
     df <- reactive({
-        if (input$outcome == "Cases") {
-            df <- df_cases()
-        } else {
-            df <- df_isolation() 
-        }
-        
-        df <- 
-            df %>% 
-            filter(sim_id %in% selected()) %>% 
-            left_join(all_params_wide %>% 
-                          select(sim_id, skim_df$skim_variable),
-                      by = "sim_id") %>% 
-            left_join(group_names %>% mutate(group_index = as.numeric(group_index)),
-                      by = c("group_number" = "group_index")) %>% 
-            mutate(across(c("t", "group_number"), as.double))
-        
+      metrics %>% 
+        filter(sim_id %in% selected()) %>%
+        pivot_wider(names_from = "metric_name", values_from = "metric_value") %>% 
+        left_join(all_params_wide %>% 
+                    select(sim_id, skim_df$skim_variable),
+                  by = "sim_id") #%>% 
+        #left_join(group_names %>% mutate(group_index = as.numeric(group_index)),
+        #          by = c("group_number" = "group_index"))
     })
-    
-    df_cases <- reactive({
-        req(input$outcome == "Cases")
-        ## Cases data frame
-        # create a table that averages over the sim_id and group
-        dbGetQuery(con,
-                   '
-           CREATE TEMP TABLE results_averaged AS
-           SELECT "sim_id", "replicate_id", "t", "group_number",
-           "cumulative_mild" + "cumulative_severe" + "cumulative_outside_infections" AS "cumulative_covid_pop",
-           "QI" + "E_0" + "E_1" + "E_2" + "E_3" + "E_4" + "E_5" + "E_6" + "pre_ID_0" + "pre_ID_1" + "pre_ID_2" + "pre_ID_3" + "ID_0" + "ID_1" + "ID_2" + "ID_3" + "ID_4" + "ID_5" + "ID_6" + "ID_7" + "SyID_mild_0" + "SyID_mild_1" + "SyID_mild_2" + "SyID_mild_3" + "SyID_mild_4" + "SyID_mild_5" + "SyID_mild_6" + "SyID_mild_7" + "SyID_mild_8" + "SyID_mild_9" + "SyID_mild_10" + "SyID_mild_11" + "SyID_mild_12" + "SyID_mild_13" + "SyID_mild_14" + "SyID_mild_15" + "SyID_mild_16" + "SyID_mild_17" + "SyID_mild_18" + "SyID_mild_19" + "SyID_severe_0" + "SyID_severe_1" + "SyID_severe_2" + "SyID_severe_3" + "SyID_severe_4" + "SyID_severe_5" + "SyID_severe_6" + "SyID_severe_7" + "SyID_severe_8" + "SyID_severe_9" + "SyID_severe_10" + "SyID_severe_11" + "SyID_severe_12" + "SyID_severe_13" + "SyID_severe_14" + "SyID_severe_15" + "SyID_severe_16" + "SyID_severe_17" + "SyID_severe_18" + "SyID_severe_19" AS "covid_pop"
-           FROM "results"
-           ')
-        
-        # now calculate peak and time to peak
-        df_cases <-
-            dbGetQuery(con, '
-           SELECT a.*
-           FROM results_averaged a
-           INNER JOIN
-             (SELECT "sim_id", "group_number", MAX("covid_pop") AS "peak"
-             FROM results_averaged
-             GROUP BY "sim_id", "group_number") b
-           ON a.sim_id = b.sim_id
-           AND a.group_number = b.group_number
-           AND a."covid_pop" = b."peak" ')
-        
-        df_cases <-
-            df_cases %>%
-            group_by(sim_id, group_number) %>%
-            filter(t == min(t)) %>%
-            ungroup() %>% 
-            mutate(across(where(bit64::is.integer64), as.numeric))
-        
-        dbGetQuery(con, "DROP TABLE IF EXISTS results_averaged")
-        
-        df_cases <-
-            df_cases %>%
-            left_join(pop_sizes, by = "group_number") %>%
-            mutate(covid_frac = covid_pop / population_size,
-                   cumulative_covid_frac = cumulative_covid_pop / population_size)
-    })
-    
-    df_isolation <- reactive({
-        req(input$outcome == "Isolation")
-        ## Isolation data frame
-        # create a table that averages over the sim_id and group
-        dbGetQuery(con,
-                   '
-           CREATE TEMP TABLE results_averaged AS
-           SELECT "sim_id", "replicate_id", "t", "group_number", AVG("QS")  + AVG("QI") AS "Q"
-           FROM "results"
-           GROUP BY "sim_id", "replicate_id", "t", "group_number"
-           ')
-        
-        # now calculate peak and time to peak
-        df_isolation <-
-            dbGetQuery(con, '
-           SELECT a.*
-           FROM results_averaged a
-           INNER JOIN
-             (SELECT "sim_id", "group_number", MAX("Q") AS "peak"
-             FROM results_averaged
-             GROUP BY "sim_id", "group_number") b
-           ON a.sim_id = b.sim_id
-           AND a.group_number = b.group_number
-           AND a."Q" = b."peak" ')
-        
-        df_isolation <-
-            df_isolation %>%
-            group_by(sim_id, group_number) %>%
-            filter(t == min(t)) %>%
-            ungroup() %>% 
-            mutate(across(where(bit64::is.integer64), as.numeric))
-        
-        dbGetQuery(con, "DROP TABLE IF EXISTS results_averaged")
-        
-        
-        df_isolation <-
-            df_isolation %>%
-            left_join(pop_sizes, by = "group_number") %>%
-            mutate(Q_frac = Q / population_size)
-        
-    })
-    
     
     ## Observations to update input selections ---------------------------------
-    observe({
-        outcome <- input$outcome
-        updateSelectInput(session, "metric", choices = metric_choices[[outcome]])
-    })
+    observeEvent(input$plot_type, {
+      updateTabsetPanel(session, "plot_axes", selected = input$plot_type)
+    }) 
     
     observe({
         parameter1 <- input$parameter1
         group_ind <- map_lgl(varied_parameters[[parameter1]], ~ length(.x) > 0)
+        group_ind <- as.numeric(varied_parameters$group_number[group_ind])
+        # choices <- group_dict_rev[group_ind]
+        choices <- group_dict_rev[which(group_dict_rev %in% group_ind)]
         
-        choices <- varied_parameters$Group[group_ind]
         updateSelectInput(session, "group", choices = choices)
     })
     
@@ -474,41 +407,13 @@ server <- function(input, output, session) {
     ## OUTPUTS -------------------------------------------------------------------
     output$plot1 <- 
         renderPlot({
-            # req(input$outcome,
-            #     input$metric,
-            #     input$parameter1,
-            #     input$metric,
-            #     cancelOutput = TRUE)
-            
-            df <- df()
-            # print(input$parameter1)
-            
-            if (input$parameter1 == " ") {
-                if (input$outcome == "Cases") {
-                    df %>% 
-                        mutate(group = paste0(group_number, ": ", group_names)) %>%
-                        ggplot(aes(t, covid_pop)) +
-                        geom_quasirandom(aes(color = as.factor(group)), alpha = 1, size = point_size) +
-                        # scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
-                        scale_color_fish_d(name = "Group", option = "Coris_gaimard") +
-                        labs(x = "Time of Peak COVID-19 cases", y = "Peak active cases",
-                             title = "COVID-19 Cases: Overview of all simulations ")    
-                } else {
-                    df %>% 
-                        mutate(group = paste0(group_number, ": ", group_names)) %>%
-                        ggplot(aes(t, Q)) +
-                        geom_quasirandom(aes(color = as.factor(group)), alpha = 1, size = point_size) +
-                        # scale_color_viridis_d(name = "Group", option = "B", begin = 0.2, end = 0.8) +
-                        scale_color_fish_d(name = "Group", option = "Coris_gaimard") +
-                        labs(x = "Time of peak quarantine", y = "Peak quarantine census",
-                             title = "Quarantine Census: Overview of all simulations")
-                }
-                
-            } else {
-                var_to_plot <- paste0(input$parameter1, "_", input$group)
-                plot_fun(df, input$metric, var_to_plot, y_lab = names(which(metric_choices[[input$outcome]] == input$metric)))    
-            }
-            # TODO: update this to be a hidden tabset panel: https://mastering-shiny.org/action-dynamic.html#dynamic-visibility 
+          req(input$plot_type)
+          df <- df()
+          
+          switch(input$plot_type, 
+            "Scatter plot overview (2 metrics)" = scatter_plot_overview(df, input$metric_x, input$metric_y),
+            "Parameter comparison (1 metric)" = one_param_quasi_plot(df, input$metric, paste0(input$parameter1, "_", input$group))
+          )
         })
     
     output$group_table <- 

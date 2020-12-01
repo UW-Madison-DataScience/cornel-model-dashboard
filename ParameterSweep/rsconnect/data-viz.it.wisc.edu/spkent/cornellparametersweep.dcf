@@ -5,8 +5,8 @@ account: spkent
 server: data-viz.it.wisc.edu
 hostUrl: https://data-viz.it.wisc.edu/__api__
 appId: 80
-bundleId: 366
+bundleId: 367
 url: https://data-viz.it.wisc.edu/cornell-parameter-sweep/
-when: 1606242305.58607
+when: 1606844724.1453
 asMultiple: FALSE
 asStatic: FALSE
