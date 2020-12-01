@@ -62,13 +62,14 @@ WITH
 -- final metric table
 SELECT 
     "sim_id", a."group_number", 
-    AVG("covid_pop") AS "peak_active_cases", 
-    AVG("covid_pop") / b.population_size AS "peak_pct_active", 
-    AVG("covid_t") AS "t_peak_cases", 
-    AVG("cumulative_covid_pop_peak") AS "cumulative_cases",
-    AVG("quar_pop") AS "peak_quarantine_census",
-    AVG("quar_pop") / b.population_size AS "peak_pct_quarantine",
-    AVG("quar_t") AS "t_peak_quarantine"
+    AVG("covid_pop") AS "Peak active cases", 
+    AVG("covid_pop") / b.population_size AS "Peak % with COVID-19", 
+    AVG("covid_t") AS "Time of peak COVID-19 cases", 
+    AVG("cumulative_covid_pop_peak") AS "Cumulative cases",
+    AVG("cumulative_covid_pop_peak") / b.population_size AS "Cumulative % with COVID-19",
+    AVG("quar_pop") AS "Peak quarantine census",
+    AVG("quar_pop") / b.population_size AS "Peak % in quarantine",
+    AVG("quar_t") AS "Time of peak quarantine"
 INTO metrics
 FROM replicate_metrics a 
 LEFT JOIN population_sizes b
