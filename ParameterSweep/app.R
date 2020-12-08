@@ -40,6 +40,11 @@ all_params <-
 
 all_params_wide <-
     all_params %>%
+    rename(
+      "Contact rate multiplier" = contact_rate_multiplier,
+      "Initial prevalence" = initial_ID_prevalence,
+      "Test fraction" = test_population_fraction
+    ) %>% 
     select(-`_scenario_name`) %>%
     pivot_wider(id_cols = sim_id,
                 names_from = group_number,
@@ -142,7 +147,7 @@ scatter_plot_overview <- function(data, x, y) {
 
 one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     alpha <- exp(-nrow(data) / (5000 / log(2)))
-    fill_match <- str_match(fill, "([a-z_]+)_(\\d+)")
+    fill_match <- str_match(fill, "(.*)_(\\d+)")
     name = paste0(fill_match[2], " in ", group_dict[fill_match[3]])
   
     p <- data %>% 
@@ -164,6 +169,43 @@ one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     
     p
     # TODO: update the name of the color legend
+}
+
+one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
+  if (is.null(cols)) { cols <- "." }
+  if (is.null(rows)) { rows <- "." }
+  wrap_tick <- function(x) { paste0("`", x, "`") }
+  rows <- wrap_tick(rows)
+  cols <- wrap_tick(cols)
+  
+  facet_form <- as.formula(paste0(
+    paste0(rows, collapse = " + "),
+    " ~ ",
+    paste0(cols, collapse = " + ")
+  ))
+  
+  data %>%
+    filter(group_number == group) %>%
+    ggplot() +
+    aes_(
+      x = as.name(x),
+      y = as.name(y),
+      color = as.name(color),
+      group = as.name(color)
+    ) +
+    geom_quasirandom() +
+    geom_smooth(method = "lm", se = FALSE, formula = "y ~ x") +
+    scale_y_log10() +
+    scale_fill_viridis_d(option = "magma", end = 0.8, begin = 0.2, aesthetics = c("color", "fill"),
+                         labels = readable_number) +
+    facet_grid(
+      facet_form,
+      scales = "free",
+      # labeller = label_both(sep = ": \n"),
+      labeller = as_labeller(readable_number, default = label_both)
+    ) +
+    theme(legend.position = "bottom") +
+    labs(y = paste(y, "(log scale)"))
 }
 
 ## UI --------------------------------------------------------------------------
@@ -287,7 +329,8 @@ body <- dashboardBody(
                        selectInput("plot_type",
                                    "Plot type",
                                    choices = c("Scatter plot overview (2 metrics)", 
-                                               "Parameter comparison (1 metric)"),
+                                               "Parameter comparison (1 metric)",
+                                               "Parameter comparison - faceted"),
                                    selected = "Scatter plot overview (2 metrics)",
                                    selectize = TRUE),
                        tabsetPanel(
@@ -322,6 +365,43 @@ body <- dashboardBody(
                                               "Group to change parameter in",
                                               choices = c(0),
                                               # selected = output$group_choices[1],
+                                              selectize = TRUE)
+                         ),
+                         # Show these when plot_type == "Parameter comparison - faceted"
+                         tabPanel("Parameter comparison - faceted",
+                                  hr(), 
+                                  h4("Note: this plot uses group codes instead of group names for compactness."),
+                                  selectInput("pcf_group",
+                                              "Filter plot by group",
+                                              choices = group_dict_rev,
+                                              # selected = output$group_choices[1],
+                                              selectize = TRUE), 
+                                  selectInput("pcf_y", 
+                                              "Metric to plot (y-axis)",
+                                              choices = metric_choices,
+                                              selected = "Peak active cases",
+                                              selectize = TRUE),
+                                  selectInput("pcf_x", 
+                                              "X-axis parameter",
+                                              choices = skim_df$skim_variable[-1],
+                                              selected = "Contact rate multiplier_0",
+                                              selectize = TRUE), 
+                                  selectInput("pcf_color", 
+                                              "Color parameter",
+                                              choices = skim_df$skim_variable[-1],
+                                              selected = "Test fraction_0",
+                                              selectize = TRUE), 
+                                  selectInput("pcf_row", 
+                                              "Row facet parameter",
+                                              choices = skim_df$skim_variable[-1],
+                                              selected = "Test fraction_1",
+                                              multiple = TRUE, 
+                                              selectize = TRUE), 
+                                  selectInput("pcf_col", 
+                                              "Column facet parameter",
+                                              choices = skim_df$skim_variable[-1],
+                                              selected = c("Initial prevalence_0", "Initial prevalence_1"),
+                                              multiple = TRUE,
                                               selectize = TRUE)
                          )
                        )
@@ -419,7 +499,8 @@ server <- function(input, output, session) {
           
           switch(input$plot_type, 
             "Scatter plot overview (2 metrics)" = scatter_plot_overview(df, input$metric_x, input$metric_y),
-            "Parameter comparison (1 metric)" = one_param_quasi_plot(df, input$metric, paste0(input$parameter1, "_", input$group))
+            "Parameter comparison (1 metric)" = one_param_quasi_plot(df, input$metric, paste0(input$parameter1, "_", input$group)),
+            "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df, input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
           )
         })
     
