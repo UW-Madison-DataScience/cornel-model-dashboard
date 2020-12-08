@@ -40,3 +40,4 @@ vignettes/*.pdf
 
 *.html
 *.csv
+config.yml

@@ -38,15 +38,14 @@ options(knitr.kable.NA = '')
 # odbc::odbcListDrivers()
 # see https://db.rstudio.com/best-practices/drivers/ to install drivers
 
-con <- dbConnect(odbc(), 
-                 driver = "PostgreSQL Driver",
-                 server = "database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com",
-                 database = "postgres",
-                 uid = "postgres",
-                 # pwd = "PUT PASSWORD HERE TO KNIT THE FILE",
-                 pwd = "YxDi7HnjfpBxHKQ",
-                 # pwd = askpass::askpass(),
-                 port = 5432)
+db <- config::get("dbtest")
+
+con <- dbConnect(RPostgres::Postgres(),
+                 dbname = db$dbname,
+                 host = db$host,
+                 port = db$port,
+                 user = db$user,
+                 password = db$password)
 
 ```
 
