@@ -6,12 +6,13 @@ library(plotly)
 library(ggbeeswarm)
 library(odbc)
 library(DBI)
+library(RPostgres)
 library(skimr)
 library(here)
 library(fishualize)
 
 # print(odbc::odbcListDrivers())
-print(odbc::odbcListDrivers()$name)
+# print(odbc::odbcListDrivers()$name)
 # message(odbc::odbcListDrivers())
 
 
@@ -19,16 +20,14 @@ print(odbc::odbcListDrivers()$name)
 
 ## Connection to SQL database 
 print("Trying to connect to SQL db at database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com...")
-con <- dbConnect(odbc(), 
-                 driver = "PostgreSQL", # for Rstudio Connect
-                 # driver = "PostgreSQL Driver", # for local driver
-                 server = "database-2.clbsgd2qdkby.us-east-1.rds.amazonaws.com",
-                 # database = "postgres",
-                 database = "test",
-                 uid = "postgres",
-                 # pwd = "PUT PASSWORD HERE TO KNIT THE FILE", 
-                 pwd = askpass::askpass(),
-                 port = 5432)
+db <- config::get("dbtest")
+
+con <- dbConnect(RPostgres::Postgres(),
+                 dbname = db$dbname,
+                 host = db$host,
+                 port = db$port,
+                 user = db$user,
+                 password = db$password)
 
 print("Connection successful!")
 
@@ -171,19 +170,28 @@ one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
 
 make_param_filter_ui <- function(x, var) {
   var_param_list <- x %>% select(group_number, !!var) %>% deframe()
+  
+  group_ui <- function(choices, group_number) {
+    selectizeInput(paste0(var, "_", group_number),
+                   group_dict[[group_number]],
+                   choices = choices,
+                   selected = choices,
+                   multiple = TRUE)
+    # checkboxGroupInput(paste0(var, "_", group_number),
+    #                    group_dict[[group_number]], 
+    #                    choices = choices,
+    #                    selected = choices)
 
-  group_selects <- 
+  }
+  
+  group_uis <- 
     var_param_list %>% 
     keep(~ length(.x) > 0) %>% 
-    imap(~ selectizeInput(paste0(var, "_", .y),
-                          group_dict[[.y]],
-                          choices = .x,
-                          selected = .x,
-                          multiple = TRUE)) 
+    imap(~ group_ui(choices = .x, group_number = .y))
   
   box(title = var, width = 3, solidHeader = TRUE, status = input_element_color,
       collapsible = TRUE, collapsed = FALSE,
-      group_selects) # might need to unlist this or something 
+      group_uis) # might need to unlist this or something 
 }
 
 # fix the styles, will over-ride later
@@ -402,7 +410,6 @@ server <- function(input, output, session) {
         
         updateSelectInput(session, "group", choices = choices)
     })
-    
     
     ## OUTPUTS -------------------------------------------------------------------
     output$plot1 <- 
