@@ -41,3 +41,4 @@ vignettes/*.pdf
 *.html
 *.csv
 config.yml
+cornell.Rmd
