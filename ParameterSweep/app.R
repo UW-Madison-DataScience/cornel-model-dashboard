@@ -205,7 +205,8 @@ one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
       labeller = as_labeller(readable_number, default = label_both)
     ) +
     theme(legend.position = "bottom") +
-    labs(y = paste(y, "(log scale)"))
+    labs(y = paste(y, "(log scale)"),
+         title = paste("Comparison of", y, "in", group_dict[as.character(group)]))
 }
 
 ## UI --------------------------------------------------------------------------
@@ -214,26 +215,49 @@ make_param_filter_ui <- function(x, var) {
   var_param_list <- x %>% select(group_number, !!var) %>% deframe()
   
   group_ui <- function(choices, group_number) {
-    selectizeInput(paste0(var, "_", group_number),
-                   group_dict[[group_number]],
-                   choices = choices,
-                   selected = choices,
-                   multiple = TRUE)
-    # checkboxGroupInput(paste0(var, "_", group_number),
-    #                    group_dict[[group_number]], 
-    #                    choices = choices,
-    #                    selected = choices)
+    # selectizeInput(paste0(var, "_", group_number),
+    #                group_dict[[group_number]],
+    #                choices = choices,
+    #                selected = choices,
+    #                multiple = TRUE)
+    checkboxGroupInput(paste0(var, "_", group_number),
+                       group_dict[[group_number]],
+                       choices = choices,
+                       selected = choices)
 
   }
   
   group_uis <- 
     var_param_list %>% 
     keep(~ length(.x) > 0) %>% 
-    imap(~ group_ui(choices = .x, group_number = .y))
+    imap(~ group_ui(choices = sort(.x), group_number = .y))
   
-  box(title = var, width = 3, solidHeader = TRUE, status = input_element_color,
-      collapsible = TRUE, collapsed = FALSE,
-      group_uis) # might need to unlist this or something 
+  n <- length(group_uis)
+  n_2 <- ceiling(n / 2)
+  
+  tabPanelBody(value = var,
+    column(width = 6, group_uis[1:n_2]),
+    column(width = 6, group_uis[(n_2+1):n])
+  )
+  # list(
+  #     column(width = 6, group_uis[1:n_2]),
+  #     column(width = 6, group_uis[(n_2+1):n])
+  # )
+  # group_uis
+  
+  # tabPanelBody(value = var,
+  #              group_uis)
+  
+  # tabPanel(title = "Hello",
+  #          h3("Some text") 
+  # )
+  # box(title = var, width = 3, solidHeader = TRUE, status = input_element_color,
+  #     collapsible = TRUE, collapsed = FALSE,
+  #     # column(width = 6, group_uis[1:4]),
+  #     # column(width = 6, group_uis[5:8])
+  #     column(width = 6, group_uis[1:n_2]),
+  #     column(width = 6, group_uis[(n_2+1):n])
+      # ) # might need to unlist this or something 
 }
 
 # fix the styles, will over-ride later
@@ -258,8 +282,8 @@ sidebar <- dashboardSidebar(
     tags$style("@import url(https://use.fontawesome.com/releases/v5.14.0/css/all.css);"),
     sidebarMenu(
         id = "sidebar",
-        menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
-        menuItem("Filter Simulations", tabName = "filters", icon = icon("table"))
+        menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard"))
+        # menuItem("Filter Simulations", tabName = "filters", icon = icon("table"))
         # menuItem("Calculations (2)", tabName = "calculations_2", icon = icon("table")),
         # menuItem("Source Code", icon = icon("file-code-o"), 
         #          href = "https://github.com/UW-Madison-DataScience/Paltiel-COVID-19-Screening-for-College/blob/master/Screening/app.R"),
@@ -324,15 +348,16 @@ body <- dashboardBody(
             ## Inputs ----------------------------------------------------------------
             column(width = 3,
                    ## Box to pick plot and axes 
-                   box(title = "Change selection to update plot", width = NULL, solidHeader = TRUE, status = input_element_color,
+                   box(title = "Plot Options", width = NULL, solidHeader = TRUE, status = input_element_color,
                        collapsible = TRUE, collapsed = FALSE,
-                       selectInput("plot_type",
+                       selectInput("plot_type", 
                                    "Plot type",
                                    choices = c("Scatter plot overview (2 metrics)", 
                                                "Parameter comparison (1 metric)",
                                                "Parameter comparison - faceted"),
                                    selected = "Scatter plot overview (2 metrics)",
                                    selectize = TRUE),
+                       hr(), 
                        tabsetPanel(
                          id = "plot_axes",
                          type = "hidden", 
@@ -377,63 +402,67 @@ body <- dashboardBody(
                                               # selected = output$group_choices[1],
                                               selectize = TRUE), 
                                   selectInput("pcf_y", 
-                                              "Metric to plot (y-axis)",
+                                              "Y-axis [metric]",
                                               choices = metric_choices,
                                               selected = "Peak active cases",
                                               selectize = TRUE),
                                   selectInput("pcf_x", 
-                                              "X-axis parameter",
+                                              "X-axis [parameter]",
                                               choices = skim_df$skim_variable[-1],
                                               selected = "Contact rate multiplier_0",
                                               selectize = TRUE), 
                                   selectInput("pcf_color", 
-                                              "Color parameter",
+                                              "Color [parameter]",
                                               choices = skim_df$skim_variable[-1],
                                               selected = "Test fraction_0",
                                               selectize = TRUE), 
                                   selectInput("pcf_row", 
-                                              "Row facet parameter",
+                                              "Row facet [parameter]",
                                               choices = skim_df$skim_variable[-1],
                                               selected = "Test fraction_1",
                                               multiple = TRUE, 
                                               selectize = TRUE), 
                                   selectInput("pcf_col", 
-                                              "Column facet parameter",
+                                              "Column facet [parameter]",
                                               choices = skim_df$skim_variable[-1],
                                               selected = c("Initial prevalence_0", "Initial prevalence_1"),
                                               multiple = TRUE,
                                               selectize = TRUE)
                          )
                        )
+                   ),
+                   box(
+                     title = "Filter Simulations", width = NULL, solidHeader = TRUE, status = input_element_color,
+                     collapsible = TRUE, collapsed = FALSE,
+                     selectInput("filter_param",
+                                 label = NULL,
+                                 choices = parameter_choices
+                     ), 
+                     do.call(tabsetPanel, # see https://github.com/rstudio/shiny/issues/2927
+                             args = c(
+                               id = "sim_filter",
+                               type = "hidden",
+                               map(names(varied_parameters)[-1],
+                                   ~ make_param_filter_ui(varied_parameters, .x))
+                                   # ~ tabPanelBody(.x, make_param_filter_ui(varied_parameters, .x))
+                               )
+                             )
                    )
                    # box(title = "Group Codes", width = NULL, solidHeader = TRUE, status = input_element_color,
                    #     collapsible = TRUE, collapsed = FALSE,
                    #     tableOutput("group_table")
                    # )
-                   # ## Second parameter to evaluate (TODO)
-                   # box(title = "Parameters", width = NULL, solidHeader = TRUE, status = input_element_color,
-                   #     collapsible = TRUE, collapsed = FALSE,
-                   #     selectInput("parameter1",
-                   #                 "Parameter to evaluate",
-                   #                 choices = putput$parameter_choices,
-                   #                 selectize = TRUE),
-                   #     selectInput("group",
-                   #                 "Group for parameter",
-                   #                 choices = output$group_choices,
-                   #                 selectize = TRUE)
-                   # ),
             ),
             ## Outputs: plot and metrics ---------------------------------------------
             column(width = 9, 
                    box(plotOutput("plot1", height = "600px"), width = 400)
             )
-        ),
-        ## Parameter Filters ---------------------------------------------------
-        tabItem(
-            tabName = "filters",
-            h3("Remove values from the group parameters to filter results in Dashboard. "),
-            map(names(varied_parameters)[-1], ~ make_param_filter_ui(varied_parameters, .x))
         )
+        ## Parameter Filters ---------------------------------------------------
+        # tabItem(
+        #     tabName = "filters",
+        #     h3("Remove values from the group parameters to filter results in Dashboard. ")
+        # )
     )
 )
 
@@ -479,6 +508,11 @@ server <- function(input, output, session) {
     ## Observations to update input selections ---------------------------------
     observeEvent(input$plot_type, {
       updateTabsetPanel(session, "plot_axes", selected = input$plot_type)
+    }) 
+    
+    observeEvent(input$filter_param, {
+      print(input$filter_param)
+      updateTabsetPanel(session, "sim_filter", selected = input$filter_param)
     }) 
     
     observe({
