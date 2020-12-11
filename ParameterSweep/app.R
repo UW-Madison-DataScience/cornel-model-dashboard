@@ -103,15 +103,15 @@ percent_metrics <- c("Peak % with COVID-19", "Cumulative % with COVID-19", "Peak
 
 ## Group names 
 group_names <- tribble(
-  ~group_number, ~group_name, ~group_name2, ~group_name_db,
-  0, "UG (Dorm)", "UG \n(Dorm)", "undergraduates_dorm",
-  1, "UG (Off Campus)", "UG \n(Off Campus)", "undergraduates_off_campus",
-  2, "Grad (Research)", "Grad \n(Research)", "grad_research",
-  3, "Grad (Teaching)", "Grad \n(Teaching)", "grad_teaching",
-  4, "F/S (Student Facing)", "F/S \n(Student Facing)", "fac_staff_student_facing",
-  5, "F/S (Other)", "F/S \n(Other)", "fac_staff_non_student_facing",
-  6, "F/S (WFH)", "F/S \n(WFH)", "fac_staff_WFH",
-  7, "Communitiy", "Communitiy", "community"
+  ~group_number, ~group_name, ~group_name2, ~group_name_db, ~long_name, 
+  0, "UG (Dorm)", "UG \n(Dorm)", "undergraduates_dorm", "Undergraduates residing in dorms",
+  1, "UG (Off Campus)", "UG \n(Off Campus)", "undergraduates_off_campus", "Undergraduates residing off-campus",
+  2, "Grad (Research)", "Grad \n(Research)", "grad_research", "Graduate students in research roles",
+  3, "Grad (Teaching)", "Grad \n(Teaching)", "grad_teaching", "Graduate students in teaching roles",
+  4, "F/S (Student Facing)", "F/S \n(Student Facing)", "fac_staff_student_facing", "Student-facing Faculty and Staff",
+  5, "F/S (Other)", "F/S \n(Other)", "fac_staff_non_student_facing", "Other Faculty and Staff",
+  6, "F/S (WFH)", "F/S \n(WFH)", "fac_staff_WFH", "Faculty and Staff working from home",
+  7, "Communitiy", "Communitiy", "community", "Madison Community"
 )
 
 group_dict <- group_names %>% select(group_number, group_name) %>% deframe()
@@ -282,8 +282,8 @@ sidebar <- dashboardSidebar(
     tags$style("@import url(https://use.fontawesome.com/releases/v5.14.0/css/all.css);"),
     sidebarMenu(
         id = "sidebar",
-        menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard"))
-        # menuItem("Filter Simulations", tabName = "filters", icon = icon("table"))
+        menuItem("Dashboard", tabName = "dashboard", icon = icon("dashboard")),
+        menuItem("Documentation", tabName = "documentation", icon = icon("book"))
         # menuItem("Calculations (2)", tabName = "calculations_2", icon = icon("table")),
         # menuItem("Source Code", icon = icon("file-code-o"), 
         #          href = "https://github.com/UW-Madison-DataScience/Paltiel-COVID-19-Screening-for-College/blob/master/Screening/app.R"),
@@ -357,7 +357,7 @@ body <- dashboardBody(
                                                "Parameter comparison - faceted"),
                                    selected = "Scatter plot overview (2 metrics)",
                                    selectize = TRUE),
-                       hr(), 
+                       h6("Use the selections below to change plot aesthetics. The options will change based on the plot type chosen above."), 
                        tabsetPanel(
                          id = "plot_axes",
                          type = "hidden", 
@@ -394,8 +394,7 @@ body <- dashboardBody(
                          ),
                          # Show these when plot_type == "Parameter comparison - faceted"
                          tabPanel("Parameter comparison - faceted",
-                                  hr(), 
-                                  h4("Note: this plot uses group codes instead of group names for compactness."),
+                                  h6("Note: this plot uses group codes instead of group names for compactness. See the documentation tab for full names."),
                                   selectInput("pcf_group",
                                               "Filter plot by group",
                                               choices = group_dict_rev,
@@ -434,6 +433,7 @@ body <- dashboardBody(
                    box(
                      title = "Filter Simulations", width = NULL, solidHeader = TRUE, status = input_element_color,
                      collapsible = TRUE, collapsed = FALSE,
+                     h6("After selecting a parameter, you will see all of the groups and values for that parameter.  Un-check boxes to remove simulations from the plots. "),
                      selectInput("filter_param",
                                  label = NULL,
                                  choices = parameter_choices
@@ -457,12 +457,14 @@ body <- dashboardBody(
             column(width = 9, 
                    box(plotOutput("plot1", height = "600px"), width = 400)
             )
-        )
+        ),
         ## Parameter Filters ---------------------------------------------------
-        # tabItem(
-        #     tabName = "filters",
-        #     h3("Remove values from the group parameters to filter results in Dashboard. ")
-        # )
+        tabItem(
+            tabName = "documentation",
+            h1("Documentation"),
+            p("Documentation is still a work in progress. Updates coming soon."),
+            tableOutput("group_table")
+        )
     )
 )
 
@@ -540,9 +542,11 @@ server <- function(input, output, session) {
     
     output$group_table <- 
         renderTable({
-            group_names %>% 
-                arrange(group_index) %>% 
-                setNames(c("Index", "Names"))
+          group_names %>% 
+            mutate(group_number = as.character(group_number)) %>% 
+            select(group_number, group_name, long_name) %>% 
+            arrange(group_number) %>% 
+            setNames(c("Group Number", "Name", "Description"))
         })
     
 }
