@@ -10,6 +10,7 @@ library(RPostgres)
 library(skimr)
 library(here)
 library(fishualize)
+library(plotly)
 
 # print(odbc::odbcListDrivers())
 # print(odbc::odbcListDrivers()$name)
@@ -145,6 +146,32 @@ scatter_plot_overview <- function(data, x, y) {
   p
 }
 
+scatter_plot_overview_plotly <- function(data, x, y) {
+  x_axis <- list(title = x)
+  y_axis <- list(title = y)
+  if (x %in% percent_metrics) {
+    x_axis$tickformat = "%"
+  }
+  if (y %in% percent_metrics) {
+    y_axis$tickformat = "%"
+  }
+  group_names <- group_dict[as.character(data[["group_number"]])]
+  
+  plot_ly(
+    x = data[[x]],
+    y = data[[y]],
+    color = factor(group_names, levels = names(group_dict_rev)),
+    alpha = 0.5
+  ) %>% 
+    add_markers() %>% 
+    layout(
+      xaxis = x_axis,
+      yaxis = y_axis,
+      title = list(text = "COVID-19 Cases: Overview of all simulations ")
+    )
+}
+
+
 one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     alpha <- exp(-nrow(data) / (5000 / log(2)))
     fill_match <- str_match(fill, "(.*)_(\\d+)")
@@ -169,6 +196,53 @@ one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     
     p
     # TODO: update the name of the color legend
+}
+
+one_param_quasi_plotly <- function(data, y, fill) {
+  # p <- one_param_quasi_plot(data, y, fill)
+  # ggplotly(p)
+  
+  col_pal <- viridis::magma(length(unique(data[[fill]])), end = 0.8, begin = 0.2)
+  fill_match <- str_match(fill, "(.*)_(\\d+)")
+  leg_title = paste0(fill_match[2], " in ", group_dict[fill_match[3]])
+  
+  # data$fill_ <- data[[fill]]
+  
+  p <- data %>% 
+    nest_by(group_number) %>% 
+    mutate(plot = list(
+      plot_ly(
+        y = data[[y]],
+        x = readable_number(data[[fill]]), 
+        color = readable_number(data[[fill]]),
+        colors = col_pal, 
+        scalegroup = group_number,
+        # side = "positive",
+        type = "violin",
+        box = list(
+          visible = FALSE
+        ),
+        meanline = list(
+          visible = TRUE
+        ),
+        # name = group_dict[as.character(group_number)],
+        # x0 = group_dict[as.character(group_number)], 
+        showlegend = ifelse(group_number == 0, TRUE, FALSE),
+        legendgroup = "all",
+        hoveron = "violins",
+        points = FALSE,
+      ) %>% 
+        layout(xaxis = list(title = group_dict2[as.character(group_number)]))
+    )) %>% 
+    subplot(shareY = TRUE, titleX = TRUE, margin = 0.01)
+  
+  p %>% 
+    layout(# xaxis = list(title = NULL),
+           yaxis = list(title = y, rangemode = "nonnegative"),
+           # legend = list(title = list(text = leg_title), side = "left")
+           title = list(text = leg_title)
+           #colorway = list(viridis::magma(4, end = 0.8, begin = 0.2))
+    )
 }
 
 one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
@@ -448,14 +522,16 @@ body <- dashboardBody(
                                )
                              )
                    )
-                   # box(title = "Group Codes", width = NULL, solidHeader = TRUE, status = input_element_color,
-                   #     collapsible = TRUE, collapsed = FALSE,
-                   #     tableOutput("group_table")
-                   # )
             ),
             ## Outputs: plot and metrics ---------------------------------------------
             column(width = 9, 
-                   box(plotOutput("plot1", height = "600px"), width = 400)
+                   box(width = 400,
+                       tabsetPanel(
+                         id = "plot_panel",
+                         type = "hidden",
+                         tabPanel("plot1", plotOutput("plot1", height = "600px")),
+                         tabPanel("plotly1", plotlyOutput("plotly1", height = "600px"))
+                       ))
             )
         ),
         ## Parameter Filters ---------------------------------------------------
@@ -510,6 +586,14 @@ server <- function(input, output, session) {
     ## Observations to update input selections ---------------------------------
     observeEvent(input$plot_type, {
       updateTabsetPanel(session, "plot_axes", selected = input$plot_type)
+      
+      # switch between plotOutput and plotlyOutput 
+      plot_panel_selection = switch(input$plot_type, 
+                                    "Scatter plot overview (2 metrics)" = "plotly1",
+                                    "Parameter comparison (1 metric)" = "plotly1",
+                                    "Parameter comparison - faceted" = "plot1")
+      
+      updateTabsetPanel(session, "plot_panel", selected = plot_panel_selection)
     }) 
     
     observeEvent(input$filter_param, {
@@ -528,17 +612,25 @@ server <- function(input, output, session) {
     })
     
     ## OUTPUTS -------------------------------------------------------------------
-    output$plot1 <- 
+    output$plot1 <-
         renderPlot({
           req(input$plot_type)
-          df <- df()
-          
-          switch(input$plot_type, 
-            "Scatter plot overview (2 metrics)" = scatter_plot_overview(df, input$metric_x, input$metric_y),
-            "Parameter comparison (1 metric)" = one_param_quasi_plot(df, input$metric, paste0(input$parameter1, "_", input$group)),
-            "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df, input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
+          switch(input$plot_type,
+            "Scatter plot overview (2 metrics)" = scatter_plot_overview(df(), input$metric_x, input$metric_y),
+            "Parameter comparison (1 metric)" = one_param_quasi_plot(df(), input$metric, paste0(input$parameter1, "_", input$group)),
+            "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
           )
         })
+
+    output$plotly1 <-
+      renderPlotly({
+        req(input$plot_type)
+        switch(input$plot_type,
+               "Scatter plot overview (2 metrics)" = scatter_plot_overview_plotly(df(), input$metric_x, input$metric_y),
+               "Parameter comparison (1 metric)" = one_param_quasi_plotly(df(), input$metric, paste0(input$parameter1, "_", input$group)),
+               "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
+        )
+      })
     
     output$group_table <- 
         renderTable({
