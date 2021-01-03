@@ -603,14 +603,6 @@ server <- function(input, output, session) {
     })
     
     ## Observations to update input selections ---------------------------------
-    
-    # if pcf_group is "All", then remove all individual groups from selection
-    observeEvent(input$pcf_group, {
-      if (-1 %in% input$pcf_group) {
-        updateSelectInput(session, "pcf_group", selected = -1)
-      }
-    })
-    
     observeEvent(input$plot_type, {
       updateTabsetPanel(session, "plot_axes", selected = input$plot_type)
       
