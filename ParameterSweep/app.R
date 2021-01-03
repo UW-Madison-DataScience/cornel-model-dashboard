@@ -198,7 +198,7 @@ one_param_quasi_plot <- function(data, y, fill, y_lab = NULL) {
     # TODO: update the name of the color legend
 }
 
-one_param_quasi_plotly <- function(data, y, fill) {
+one_param_quasi_plotly <- function(data, y, fill, logscale) {
   # p <- one_param_quasi_plot(data, y, fill)
   # ggplotly(p)
   
@@ -236,16 +236,27 @@ one_param_quasi_plotly <- function(data, y, fill) {
     )) %>% 
     subplot(shareY = TRUE, titleX = TRUE, margin = 0.01)
   
-  p %>% 
-    layout(# xaxis = list(title = NULL),
-           yaxis = list(title = y, rangemode = "nonnegative"),
-           # legend = list(title = list(text = leg_title), side = "left")
-           title = list(text = leg_title)
-           #colorway = list(viridis::magma(4, end = 0.8, begin = 0.2))
-    )
+  if (logscale) {
+    p %>% 
+      layout(yaxis = list(title = y, rangemode = "nonenegative", type = "log"),
+             title = list(text = leg_title))
+  } else {
+    p %>% 
+      layout(yaxis = list(title = y, rangemode = "nonnegative"),
+             title = list(text = leg_title))  
+  }
 }
 
-one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
+one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols, logscale) {
+  data <- data %>% 
+    mutate(across(skim_df$skim_variable[-1], .fns = readable_number),
+           Group = group_dict[as.character(group_number)]) 
+  
+  `%ni%` <- Negate(`%in%`)
+  if (-1 %ni% group) {
+    data <- filter(data, group_number %in% group)
+  }
+  
   if (is.null(cols)) { cols <- "." }
   if (is.null(rows)) { rows <- "." }
   wrap_tick <- function(x) { paste0("`", x, "`") }
@@ -258,8 +269,7 @@ one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
     paste0(cols, collapse = " + ")
   ))
   
-  data %>%
-    filter(group_number == group) %>%
+  p <- data %>%
     ggplot() +
     aes_(
       x = as.name(x),
@@ -269,18 +279,20 @@ one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols) {
     ) +
     geom_quasirandom() +
     geom_smooth(method = "lm", se = FALSE, formula = "y ~ x") +
-    scale_y_log10() +
     scale_fill_viridis_d(option = "magma", end = 0.8, begin = 0.2, aesthetics = c("color", "fill"),
-                         labels = readable_number) +
+    ) +
     facet_grid(
       facet_form,
       scales = "free",
-      # labeller = label_both(sep = ": \n"),
-      labeller = as_labeller(readable_number, default = label_both)
+      labeller = "label_both"
     ) +
     theme(legend.position = "bottom") +
-    labs(y = paste(y, "(log scale)"),
+    labs(y = y,
          title = paste("Comparison of", y, "in", group_dict[as.character(group)]))
+  
+  if (logscale) p <- p + scale_y_log10() + labs(y = paste(y, "(log scale)"))
+  
+  p
 }
 
 ## UI --------------------------------------------------------------------------
@@ -455,6 +467,9 @@ body <- dashboardBody(
                                               choices = metric_choices,
                                               selected = "Peak active cases",
                                               selectize = TRUE),
+                                  checkboxInput("pc_yscale", 
+                                                "Log scale?", 
+                                                value = FALSE), 
                                   selectInput("parameter1",
                                               "Parameter of Interest (color)",
                                               choices = c(parameter_choices),
@@ -471,33 +486,37 @@ body <- dashboardBody(
                                   h6("Note: this plot uses group codes instead of group names for compactness. See the documentation tab for full names."),
                                   selectInput("pcf_group",
                                               "Filter plot by group",
-                                              choices = group_dict_rev,
-                                              # selected = output$group_choices[1],
+                                              choices = c("All" = -1, group_dict_rev), 
+                                              multiple = TRUE, 
+                                              selected = 0,
                                               selectize = TRUE), 
                                   selectInput("pcf_y", 
                                               "Y-axis [metric]",
                                               choices = metric_choices,
                                               selected = "Peak active cases",
                                               selectize = TRUE),
+                                  checkboxInput("pcf_yscale", 
+                                                "Log scale?", 
+                                                value = TRUE), 
                                   selectInput("pcf_x", 
                                               "X-axis [parameter]",
-                                              choices = skim_df$skim_variable[-1],
+                                              choices = c("Group", skim_df$skim_variable[-1]),
                                               selected = "Contact rate multiplier_0",
                                               selectize = TRUE), 
                                   selectInput("pcf_color", 
                                               "Color [parameter]",
-                                              choices = skim_df$skim_variable[-1],
+                                              choices = c("Group", skim_df$skim_variable[-1]),
                                               selected = "Test fraction_0",
                                               selectize = TRUE), 
                                   selectInput("pcf_row", 
                                               "Row facet [parameter]",
-                                              choices = skim_df$skim_variable[-1],
+                                              choices = c("Group", skim_df$skim_variable[-1]),
                                               selected = "Test fraction_1",
                                               multiple = TRUE, 
                                               selectize = TRUE), 
                                   selectInput("pcf_col", 
                                               "Column facet [parameter]",
-                                              choices = skim_df$skim_variable[-1],
+                                              choices = c("Group", skim_df$skim_variable[-1]),
                                               selected = c("Initial prevalence_0", "Initial prevalence_1"),
                                               multiple = TRUE,
                                               selectize = TRUE)
@@ -584,6 +603,14 @@ server <- function(input, output, session) {
     })
     
     ## Observations to update input selections ---------------------------------
+    
+    # if pcf_group is "All", then remove all individual groups from selection
+    observeEvent(input$pcf_group, {
+      if (-1 %in% input$pcf_group) {
+        updateSelectInput(session, "pcf_group", selected = -1)
+      }
+    })
+    
     observeEvent(input$plot_type, {
       updateTabsetPanel(session, "plot_axes", selected = input$plot_type)
       
@@ -618,7 +645,7 @@ server <- function(input, output, session) {
           switch(input$plot_type,
             "Scatter plot overview (2 metrics)" = scatter_plot_overview(df(), input$metric_x, input$metric_y),
             "Parameter comparison (1 metric)" = one_param_quasi_plot(df(), input$metric, paste0(input$parameter1, "_", input$group)),
-            "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
+            "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col, input$pcf_yscale)
           )
         })
 
@@ -627,8 +654,8 @@ server <- function(input, output, session) {
         req(input$plot_type)
         switch(input$plot_type,
                "Scatter plot overview (2 metrics)" = scatter_plot_overview_plotly(df(), input$metric_x, input$metric_y),
-               "Parameter comparison (1 metric)" = one_param_quasi_plotly(df(), input$metric, paste0(input$parameter1, "_", input$group)),
-               "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col)
+               "Parameter comparison (1 metric)" = one_param_quasi_plotly(df(), input$metric, paste0(input$parameter1, "_", input$group), input$pc_yscale),
+               "Parameter comparison - faceted" = one_param_quasi_plot_faceted(df(), input$pcf_group, input$pcf_x, input$pcf_y, input$pcf_color, input$pcf_row, input$pcf_col, input$pcf_yscale)
         )
       })
     
