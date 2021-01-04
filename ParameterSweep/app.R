@@ -11,6 +11,7 @@ library(skimr)
 library(here)
 library(fishualize)
 library(plotly)
+library(janitor)
 
 # print(odbc::odbcListDrivers())
 # print(odbc::odbcListDrivers()$name)
@@ -161,14 +162,17 @@ scatter_plot_overview_plotly <- function(data, x, y) {
     x = data[[x]],
     y = data[[y]],
     color = factor(group_names, levels = names(group_dict_rev)),
-    alpha = 0.5
+    customdata = 1:nrow(data), 
+    alpha = 1
   ) %>% 
     add_markers() %>% 
     layout(
       xaxis = x_axis,
       yaxis = y_axis,
-      title = list(text = "COVID-19 Cases: Overview of all simulations ")
-    )
+      title = list(text = "COVID-19 Cases: Overview of all simulations "),
+      dragmode = "select"
+    ) %>% 
+    event_register("plotly_selected")
 }
 
 
@@ -290,7 +294,11 @@ one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols, l
     labs(y = y,
          title = paste("Comparison of", y, "in", group_dict[as.character(group)]))
   
-  if (logscale) p <- p + scale_y_log10() + labs(y = paste(y, "(log scale)"))
+  if (logscale) {
+    p <- p + scale_y_log10() + labs(y = paste(y, "(log scale)"))
+  } else if (y %in% percent_metrics) {
+      p <- p + scale_y_continuous(labels = scales::percent)
+  }
   
   p
 }
@@ -550,7 +558,9 @@ body <- dashboardBody(
                          type = "hidden",
                          tabPanel("plot1", plotOutput("plot1", height = "600px")),
                          tabPanel("plotly1", plotlyOutput("plotly1", height = "600px"))
-                       ))
+                       )),
+                   box(width = 400, 
+                       uiOutput("selected_info"))
             )
         ),
         ## Parameter Filters ---------------------------------------------------
@@ -568,6 +578,7 @@ ui <- dashboardPage(header, sidebar, body)
 
 server <- function(input, output, session) {
     
+    ## Helper functions --------------------------------------------------------
     filter_sims <- function(var) {
       var_param_list <- varied_parameters %>% select(group_number, !!var) %>% deframe()
       
@@ -582,6 +593,19 @@ server <- function(input, output, session) {
         imap(~ param_index(var, group = .y))
       
       reduce(each_group, ~ .x & .y)
+    }
+  
+    custom_table <- function(data, var) {
+      tbl1 <- data %>% 
+        tabyl({{ var }}, plot_selected) %>% 
+        adorn_percentages(denominator = "col") %>% 
+        adorn_pct_formatting() %>% 
+        adorn_ns()
+      
+      tbl1[, 1] <- readable_number(tbl1[, 1])
+      colnames(tbl1) <- c("Param value", "Not Selected", "Selected")
+      
+      tbl1[, c(1, 3)] 
     }
   
     ## Reactive elements ---------------------------------------------------------
@@ -601,6 +625,51 @@ server <- function(input, output, session) {
         #left_join(group_names %>% mutate(group_index = as.numeric(group_index)),
         #          by = c("group_number" = "group_index"))
     })
+    
+    plot_selected <- reactiveVal()
+    
+    observeEvent(event_data("plotly_selected"), {
+      d <- event_data("plotly_selected")
+      plot_selected(d$customdata)
+    })
+    
+    observeEvent(selected(), {
+      # if filters are selected, need to reset since plot data changes 
+      plot_selected(NULL)
+    })
+    
+    info_gain_table <- reactive({
+      df <- df()
+      vars_to_exclude <- skim(df) %>% filter(factor.n_unique == 1) %>% pull(skim_variable)
+      
+      df$plot_selected <- factor(0, levels = c(0, 1))
+      df$plot_selected[plot_selected()] <- 1
+      
+      vars <- wrap_tick(skim_df$skim_variable[-1])
+      var_form <- as.formula(paste("plot_selected ~", paste(vars, collapse = " + ")))
+      
+      FSelectorRcpp::information_gain(var_form, data = df, type = "gainratio") %>% 
+        mutate(
+          importance = ifelse(attributes %in% vars_to_exclude, 0, importance), 
+          importance = importance / max(importance), # normalize to a percent score
+          importance = readable_number(importance)
+        ) %>% 
+        arrange(desc(importance))
+    })
+    
+    twoway_table_list <- reactive({
+      ig_table <- info_gain_table()
+      df <- df()
+      df$plot_selected <- factor(0, levels = c(0, 1))
+      df$plot_selected[plot_selected()] <- 1
+
+      vars <- ig_table$attributes
+      vars %>%
+        map(as.name) %>%
+        map(custom_table, data = df) %>% # see helper function above
+        setNames(vars)
+    })
+    
     
     ## Observations to update input selections ---------------------------------
     observeEvent(input$plot_type, {
@@ -660,6 +729,32 @@ server <- function(input, output, session) {
             setNames(c("Group Number", "Name", "Description"))
         })
     
+    output$selected_info <- renderUI({
+      one_row <- function(i) {
+        var <- ig_table[i, "attributes"]
+        var_match <- str_match(var, "(.*)_(\\d+)")
+        name = paste0(var_match[2], " in ", group_dict[var_match[3]])
+        
+        fluidRow(
+          column(width = 4, 
+                 h4(name),
+                 h5(paste("Importance score: ", ig_table[i, "importance"]))
+          ),
+          column(width = 8,
+                 renderTable({ twoway_table_list()[[i]] }, spacing = "xs") 
+          )
+        )
+      }
+      
+      if (is.null(plot_selected())) {
+        h4("Make a selection in the ", em("scatter plot overview"),  " to display important parameters")
+      } else {
+        ig_table <- info_gain_table()
+        map(1:nrow(ig_table), one_row)
+      }
+      
+    })
+      
 }
 
 shinyApp(ui, server)
