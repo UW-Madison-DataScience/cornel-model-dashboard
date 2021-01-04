@@ -124,6 +124,8 @@ group_dict_rev <- group_names %>% select(group_name, group_number) %>% deframe()
 theme_set(theme_minimal(base_size = 16))
 point_size = 2
 
+wrap_tick <- function(x) { paste0("`", x, "`") }
+
 ## Helper functions ------------------------------------------------------------
 
 
@@ -263,7 +265,7 @@ one_param_quasi_plot_faceted <- function(data, group, x, y, color, rows, cols, l
   
   if (is.null(cols)) { cols <- "." }
   if (is.null(rows)) { rows <- "." }
-  wrap_tick <- function(x) { paste0("`", x, "`") }
+  
   rows <- wrap_tick(rows)
   cols <- wrap_tick(cols)
   
